@@ -2,8 +2,8 @@
  * UrjaAudit Core Frontend Application Controller
  *
  * Every page load starts a brand-new, empty audit session.
- * The session id is kept in memory only (never saved in the browser),
- * so each visitor and each refresh starts with an empty appliance list.
+ * The session id is kept in memory only, so each visitor and each refresh
+ * starts with an empty appliance list.
  */
 
 // -------------------------------------------------------------
@@ -23,6 +23,18 @@ const state = {
 };
 
 const REDUCED_MOTION = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+// Rough constants for the carbon estimates (shown as estimates in the UI)
+const CO2_PER_KWH = 0.8;          // kg CO2 per kWh, approximate Indian grid average
+const KG_CO2_PER_TREE_YEAR = 21;  // kg CO2 absorbed by one tree per year, approximate
+
+const SLAB_COLORS = ['#10b981', '#84cc16', '#f59e0b', '#f97316', '#ef4444'];
+
+const CATEGORY_ICONS = {
+  Lighting: '💡', Cooling: '🌀', Refrigeration: '🧊',
+  Entertainment: '📺', 'Heavy Motor': '⚙️', Other: '🔌'
+};
+const catIcon = (c) => CATEGORY_ICONS[c] || '🔌';
 
 const PRESETS = [
   { name: 'LED Bulb (9W)', category: 'Lighting', wattage: 9, hours: 6 },
@@ -47,6 +59,7 @@ function esc(value) {
 
 const num = (n, d = 1) => Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: d, maximumFractionDigits: d });
 const inr = (n, d = 2) => '₹' + num(n, d);
+const compact = (v) => (Math.abs(v) >= 1000 ? `${(v / 1000).toFixed(Math.abs(v) >= 10000 ? 0 : 1)}k` : String(Math.round(v)));
 
 function debounce(fn, ms = 250) {
   let t;
@@ -83,7 +96,7 @@ function toast(message, type = 'success') {
   }, type === 'error' ? 5000 : 2800);
 }
 
-function animateText(el, to, formatter, duration = 600) {
+function animateText(el, to, formatter, duration = 700) {
   if (!el) return;
   const from = Number(el.dataset.value || 0);
   el.dataset.value = to;
@@ -194,13 +207,11 @@ function switchScreen(screenId, updateHash = true) {
 async function initApp() {
   applyTheme(document.documentElement.getAttribute('data-theme') || 'light');
 
-  // The old version saved a session id in the browser. Remove it so nothing is reused.
+  // Older versions saved a session id in the browser. Remove it so nothing is reused.
   try { localStorage.removeItem('urja_session_id'); } catch { /* ignore */ }
 
-  // The button now loads sample data on demand (refresh always starts empty)
-  $('btn-load-bihar-example').textContent = '⚡ Load Sample Data';
-
   buildPresetList();
+  buildQuickChips();
   setupEventListeners();
 
   const hash = location.hash.replace('#', '');
@@ -210,6 +221,8 @@ async function initApp() {
     await createNewSession(false, false); // always a fresh, empty session
   } catch (err) {
     toast(`Could not reach the server: ${err.message}`, 'error');
+  } finally {
+    document.body.classList.remove('is-loading');
   }
 }
 
@@ -265,13 +278,51 @@ function renderAll() {
   }
 }
 
-// -------------------------------------------------------------
-// Header
-// -------------------------------------------------------------
 function renderHeader() {
   if (state.summary?.session) {
     $('session-property-name').textContent = state.summary.session.property_name;
   }
+}
+
+// -------------------------------------------------------------
+// Efficiency score
+// -------------------------------------------------------------
+function computeScore(m, recs, hasBill) {
+  const rate = m.marginalRate || 8;
+  const calcCost = m.totalCalculatedMonthlyKwh * rate;
+
+  // Savings from real upgrades/behaviour (excluding the unexplained-drain item, scored separately)
+  const upgradeSavings = recs
+    .filter((r) => r.id !== 'REC_PHANTOM_DRAIN')
+    .reduce((s, r) => s + r.estimatedMonthlySavings, 0);
+  const savingsShare = calcCost > 0 ? Math.min(1, upgradeSavings / calcCost) : 0;
+  const upgradePenalty = Math.min(40, savingsShare * 80);
+
+  let drainPenalty = 0;
+  let overPenalty = 0;
+  if (hasBill && m.actualUnitsKwh > 0) {
+    drainPenalty = Math.min(25, (m.unaccountedUnits / m.actualUnitsKwh) * 100 * 0.8);
+    if (m.totalCalculatedMonthlyKwh > m.actualUnitsKwh * 1.15) overPenalty = 10;
+  }
+
+  const score = Math.max(0, Math.round(100 - upgradePenalty - drainPenalty - overPenalty));
+
+  let label, tone;
+  if (score >= 80) { label = 'Excellent — very efficient'; tone = 'great'; }
+  else if (score >= 60) { label = 'Good — a few easy wins'; tone = 'good'; }
+  else if (score >= 40) { label = 'Room to improve'; tone = 'fair'; }
+  else { label = 'High savings potential'; tone = 'low'; }
+
+  const top = [...recs].sort((a, b) => b.estimatedMonthlySavings - a.estimatedMonthlySavings)[0];
+  let detail;
+  if (top && m.totalPotentialSavingsMonthly > 0) {
+    detail = `You could save about ${inr(m.totalPotentialSavingsMonthly, 0)} a month. Biggest opportunity: ${top.title}.`;
+  } else {
+    detail = 'No major waste detected in your appliance list. Keep it up!';
+  }
+  if (!hasBill) detail += ' Add your bill to check how well your list matches your meter.';
+
+  return { score, label, tone, detail };
 }
 
 // -------------------------------------------------------------
@@ -281,6 +332,14 @@ function renderDashboard() {
   if (!state.summary || !state.summary.metrics) return;
   const m = state.summary.metrics;
   const hasBill = !!state.bill;
+  const recs = state.summary.recommendations || [];
+  const empty = state.appliances.length === 0;
+
+  $('onboarding').hidden = !empty;
+  $('dash-content').hidden = empty;
+  if (empty) return;
+
+  renderHero(m, recs, hasBill);
 
   animateText($('kpi-calc-kwh'), m.totalCalculatedMonthlyKwh, (v) => num(v, 1));
   $('kpi-calc-daily').textContent = `${num(m.totalCalculatedDailyKwh, 2)} kWh/day`;
@@ -303,24 +362,21 @@ function renderDashboard() {
   $('kpi-savings-annual').textContent = `${inr(m.totalPotentialSavingsMonthly * 12)}/yr`;
 
   renderReconciliation(m, hasBill);
+  renderCarbon(m);
 
   // Top appliances
   const topList = $('top-appliances-list');
   topList.innerHTML = '';
-  const breakdown = state.summary.applianceBreakdown || [];
-  if (!breakdown.length) {
-    topList.innerHTML = '<div class="empty-state"><span class="big">🔌</span>Add appliances to see your biggest energy users.</div>';
-  }
-  breakdown.slice(0, 5).forEach((a) => {
+  (state.summary.applianceBreakdown || []).slice(0, 5).forEach((a, i) => {
     const item = document.createElement('div');
     item.className = 'top-app-item';
     item.innerHTML = `
       <div class="top-app-meta">
-        <span>${esc(a.appliance_name)} (${esc(a.quantity)}× @ ${esc(a.wattage)}W)</span>
+        <span>${catIcon(a.category)} ${esc(a.appliance_name)} (${esc(a.quantity)}× @ ${esc(a.wattage)}W)</span>
         <span>${num(a.monthlyKwh, 1)} kWh · ${num(a.percentageShare, 1)}%</span>
       </div>
       <div class="progress-bar-bg">
-        <div class="progress-bar-fill" style="width:${Math.min(100, a.percentageShare)}%"></div>
+        <div class="progress-bar-fill" style="width:${Math.min(100, a.percentageShare)}%;animation-delay:${i * 80}ms"></div>
       </div>`;
     topList.appendChild(item);
   });
@@ -334,18 +390,39 @@ function renderDashboard() {
 
   const legend = $('category-legend');
   legend.innerHTML = '';
-  const totalKwh = categoryData.reduce((s, c) => s + c.value, 0);
-  categoryData.filter((c) => c.value > 0).forEach((cat, idx) => {
+  const visibleCats = categoryData.filter((c) => c.value > 0);
+  const totalKwh = visibleCats.reduce((s, c) => s + c.value, 0);
+  visibleCats.forEach((cat, idx) => {
     const pct = totalKwh > 0 ? (cat.value / totalKwh) * 100 : 0;
     const row = document.createElement('div');
     row.className = 'legend-item';
     row.innerHTML = `
-      <div><span class="legend-color-dot" style="background-color:${CHART_COLORS[idx % CHART_COLORS.length]}"></span><strong>${esc(cat.label)}</strong></div>
+      <div><span class="legend-color-dot" style="background-color:${CHART_COLORS[idx % CHART_COLORS.length]}"></span><strong>${catIcon(cat.label)} ${esc(cat.label)}</strong></div>
       <span>${num(cat.value, 1)} kWh <span class="muted">(${num(pct, 0)}%)</span></span>`;
     legend.appendChild(row);
   });
 
-  renderRecommendationsList('dashboard-recommendations-list', state.summary.recommendations || [], state.appliances.length);
+  renderSlabLadder(m, hasBill);
+  renderProjection(recs);
+  renderWhatIf();
+  renderRecommendationsList('dashboard-recommendations-list', recs, state.appliances.length);
+}
+
+function renderHero(m, recs, hasBill) {
+  const r = computeScore(m, recs, hasBill);
+  $('hero').dataset.tone = r.tone;
+  $('score-label').textContent = r.label;
+  $('score-detail').textContent = r.detail;
+  renderGauge('score-gauge', r.score);
+
+  const co2 = m.totalCalculatedMonthlyKwh * CO2_PER_KWH;
+  const chips = [
+    `⚡ ${num(m.totalCalculatedMonthlyKwh, 0)} kWh / month`,
+    `💰 Save up to ${inr(m.totalPotentialSavingsMonthly, 0)} / month`,
+    `🌿 ${num(co2, 0)} kg CO₂ / month`,
+    `📈 Marginal rate ${inr(m.marginalRate, 2)} / kWh`
+  ];
+  $('hero-chips').innerHTML = chips.map((c) => `<span class="hero-chip">${c}</span>`).join('');
 }
 
 function renderReconciliation(m, hasBill) {
@@ -373,6 +450,122 @@ function renderReconciliation(m, hasBill) {
     text = 'Your appliance inventory closely matches your metered consumption. Nice and accurate.';
   }
   $('recon-text').textContent = text;
+}
+
+function renderCarbon(m) {
+  const co2Month = m.totalCalculatedMonthlyKwh * CO2_PER_KWH;
+  animateText($('co2-month'), co2Month, (v) => num(v, 1));
+  $('co2-year').textContent = `≈ ${num(co2Month * 12, 0)} kg per year`;
+
+  const rate = m.marginalRate || 8;
+  const savedKg = rate > 0 ? (m.totalPotentialSavingsMonthly / rate) * 12 * CO2_PER_KWH : 0;
+  const trees = savedKg / KG_CO2_PER_TREE_YEAR;
+
+  $('carbon-trees').textContent = trees >= 0.5
+    ? '🌳'.repeat(Math.min(12, Math.round(trees)))
+    : (savedKg > 0 ? '🌱' : '');
+
+  $('carbon-note').textContent = savedKg > 0
+    ? `Following the tips could avoid about ${num(savedKg, 0)} kg of CO₂ a year, like planting ${num(trees, 1)} trees.`
+    : 'Add your appliances and bill to see how much CO₂ your savings could avoid.';
+}
+
+function renderSlabLadder(m, hasBill) {
+  const box = $('slab-ladder');
+  const msg = $('slab-message');
+  const slabs = state.tariffs || [];
+
+  if (!slabs.length) {
+    box.innerHTML = '<div class="empty-state">Tariff slabs are not available.</div>';
+    msg.textContent = '';
+    return;
+  }
+
+  const useBill = hasBill && m.actualUnitsKwh > 0;
+  const units = useBill ? m.actualUnitsKwh : m.totalCalculatedMonthlyKwh;
+
+  const segStart = (s) => (Number(s.min_units) === 0 ? 0 : Number(s.min_units) - 1);
+  const OPEN_EXTRA = 100; // visual width given to the open-ended top slab
+  const last = slabs[slabs.length - 1];
+  const segEnd = (s) => (s.max_units !== null ? Number(s.max_units) : segStart(s) + OPEN_EXTRA);
+  const total = segEnd(last);
+
+  let currentIdx = slabs.findIndex((s) => units <= segEnd(s));
+  if (currentIdx === -1) currentIdx = slabs.length - 1;
+
+  const colorFor = (i) => SLAB_COLORS[Math.round((i / Math.max(1, slabs.length - 1)) * (SLAB_COLORS.length - 1))];
+
+  const segHtml = slabs.map((s, i) => {
+    const width = ((segEnd(s) - segStart(s)) / total) * 100;
+    const range = s.max_units !== null ? `${segStart(s)}–${s.max_units}` : `${segStart(s)}+`;
+    return `
+      <div class="ladder-seg ${i === currentIdx ? 'is-current' : ''}" style="width:${width}%;background:${colorFor(i)};animation-delay:${i * 90}ms" title="${esc(range)} units at ${inr(s.rate_per_kwh)} per unit">
+        <span class="rate">${inr(s.rate_per_kwh)}</span>
+        <span class="range">${esc(range)}</span>
+      </div>`;
+  }).join('');
+
+  const markerPct = Math.max(2, Math.min(98, (units / total) * 100));
+  box.innerHTML = `
+    <div class="ladder-wrap">
+      <div class="ladder-marker" style="left:${markerPct}%"><span>${num(units, 0)} kWh</span></div>
+      <div class="ladder">${segHtml}</div>
+    </div>`;
+
+  const basis = useBill ? 'from your bill' : 'from your appliance list';
+  const cur = slabs[currentIdx];
+  const next = slabs[currentIdx + 1];
+  if (next) {
+    const gap = Math.max(0, segEnd(cur) - units);
+    msg.textContent = `You are using ${num(units, 0)} units a month (${basis}). About ${num(gap, 0)} more units would push you into the ${inr(next.rate_per_kwh)} slab, so each extra unit would cost ${inr(Number(next.rate_per_kwh) - Number(cur.rate_per_kwh))} more.`;
+  } else {
+    msg.textContent = `You are using ${num(units, 0)} units a month (${basis}), in the top slab. Every extra unit costs ${inr(cur.rate_per_kwh)}, so cutting usage saves the most here.`;
+  }
+}
+
+function renderProjection(recs) {
+  const note = $('projection-note');
+  const monthly = recs.reduce((s, r) => s + r.estimatedMonthlySavings, 0);
+
+  if (monthly <= 0) {
+    $('projection-chart').innerHTML = '<div class="empty-state"><span class="big">📈</span>No savings to project yet</div>';
+    note.textContent = '';
+    return;
+  }
+
+  // Approximate upfront cost, back-calculated from each recommendation's payback
+  const capital = Math.round(recs.reduce((s, r) => (
+    s + (r.estimatedPaybackMonths ? r.estimatedPaybackMonths * r.estimatedMonthlySavings : 0)
+  ), 0));
+
+  const points = Array.from({ length: 13 }, (_, i) => ({ x: i, y: monthly * i - capital }));
+  const breakEven = capital > 0 ? capital / monthly : 0;
+
+  renderLineChart('projection-chart', points, {
+    breakEven: breakEven > 0 && breakEven <= 12 ? breakEven : null,
+    yFormat: (v) => `${v < 0 ? '−' : ''}₹${compact(Math.abs(v))}`
+  });
+
+  if (capital <= 0) {
+    note.textContent = `No upfront cost needed. About ${inr(monthly * 12, 0)} could be saved over 12 months.`;
+  } else if (breakEven <= 12) {
+    note.textContent = `Upgrades cost about ${inr(capital, 0)} upfront. You break even in roughly ${num(breakEven, 1)} months and are about ${inr(points[12].y, 0)} ahead after a year.`;
+  } else {
+    note.textContent = `Upgrades cost about ${inr(capital, 0)} upfront and take roughly ${num(breakEven, 1)} months to pay back, which is beyond this 12-month view.`;
+  }
+}
+
+function renderWhatIf() {
+  const m = state.summary?.metrics;
+  if (!m) return;
+  const pct = Number($('whatif-slider').value);
+  const kwh = m.totalCalculatedMonthlyKwh * (pct / 100);
+  const rate = m.marginalRate || 8;
+  $('whatif-pct').textContent = pct;
+  $('whatif-kwh').textContent = `${num(kwh, 1)} kWh`;
+  $('whatif-month').textContent = inr(kwh * rate, 0);
+  $('whatif-year').textContent = inr(kwh * rate * 12, 0);
+  $('whatif-co2').textContent = `${num(kwh * 12 * CO2_PER_KWH, 0)} kg`;
 }
 
 function renderRecommendationsList(containerId, recs, applianceCount = 1) {
@@ -425,7 +618,6 @@ function renderBillForm() {
     $('actual-amount').value = state.bill.actual_bill_amount;
     $('bill-month').value = state.bill.billing_month || 'Current Month';
   } else {
-    // Fresh session: nothing entered yet
     $('actual-units').value = '';
     $('actual-amount').value = '';
     $('bill-month').value = 'Current Month';
@@ -497,6 +689,12 @@ function buildPresetList() {
   $('appliance-presets').innerHTML = PRESETS.map((p) => `<option value="${esc(p.name)}"></option>`).join('');
 }
 
+function buildQuickChips() {
+  $('quick-chips').innerHTML = PRESETS.map((p, i) => (
+    `<button type="button" class="chip" data-preset="${i}">${catIcon(p.category)} ${esc(p.name.split(' (')[0])}</button>`
+  )).join('');
+}
+
 function getVisibleAppliances() {
   const { q, category, sort } = state.filters;
   let list = state.appliances.filter((a) => {
@@ -528,7 +726,7 @@ function renderAppliancesTable() {
 
   if (!visible.length) {
     tbody.innerHTML = `<tr><td colspan="10"><div class="empty-state"><span class="big">🔎</span>${
-      state.appliances.length ? 'No appliances match your filters.' : 'Your list is empty — add your first appliance above.'
+      state.appliances.length ? 'No appliances match your filters.' : 'Your list is empty. Add your first appliance above, or tap a quick-add chip.'
     }</div></td></tr>`;
     tfoot.innerHTML = '';
     return;
@@ -541,7 +739,7 @@ function renderAppliancesTable() {
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td><strong>${esc(a.appliance_name)}</strong></td>
-      <td><span class="panel-tag">${esc(a.category)}</span></td>
+      <td><span class="panel-tag cat-pill">${catIcon(a.category)} ${esc(a.category)}</span></td>
       <td>${esc(a.quantity)}</td>
       <td>${num(a.wattage, 0)} W</td>
       <td>${num(a.daily_hours, 1)} hrs/day</td>
@@ -728,7 +926,7 @@ function renderReport() {
   const recContainer = $('report-recommendations-list');
   recContainer.innerHTML = '';
   const recs = state.summary.recommendations || [];
-  if (!recs.length) recContainer.innerHTML = '<p class="rec-desc">No action items yet — add appliances and your bill to generate recommendations.</p>';
+  if (!recs.length) recContainer.innerHTML = '<p class="rec-desc">No action items yet. Add appliances and your bill to generate recommendations.</p>';
   recs.forEach((r) => {
     const div = document.createElement('div');
     div.className = 'report-rec-item';
@@ -767,6 +965,21 @@ function exportReportCSV() {
 // -------------------------------------------------------------
 // Event handlers
 // -------------------------------------------------------------
+async function loadSampleData(skipConfirm = false) {
+  if (!skipConfirm) {
+    const message = state.appliances.length
+      ? 'This replaces your current list with a sample Bihar household. Your current entries will no longer be shown.'
+      : 'Load a sample Bihar household so you can see how the audit works?';
+    const ok = await confirmDialog(message, 'Load sample');
+    if (!ok) return;
+  }
+  try {
+    await createNewSession(true, true);
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+}
+
 function setupEventListeners() {
   // Theme
   $('theme-toggle').addEventListener('click', () => {
@@ -791,6 +1004,8 @@ function setupEventListeners() {
     try { await refreshAllData(); toast('Dashboard refreshed', 'info'); }
     catch (err) { toast(err.message, 'error'); }
   });
+  $('btn-onboard-sample').addEventListener('click', () => loadSampleData(true));
+  $('whatif-slider').addEventListener('input', renderWhatIf);
 
   // Bill form
   ['actual-units', 'actual-amount', 'sanctioned-load'].forEach((id) => {
@@ -828,6 +1043,21 @@ function setupEventListeners() {
     } catch (err) {
       toast(err.message, 'error');
     }
+  });
+
+  // Quick-add chips
+  $('quick-chips').addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-preset]');
+    if (!btn) return;
+    const p = PRESETS[Number(btn.dataset.preset)];
+    if (!p) return;
+    $('app-name').value = p.name;
+    $('app-category').value = p.category;
+    $('app-wattage').value = p.wattage;
+    $('app-hours').value = p.hours;
+    $('app-qty').focus();
+    $('app-qty').select();
+    toast(`${p.name.split(' (')[0]} filled in. Set the quantity and press Add.`, 'info');
   });
 
   // Add appliance
@@ -914,19 +1144,8 @@ function setupEventListeners() {
     }
   });
 
-  // Load sample data (replaces the current empty/own list with the sample household)
-  $('btn-load-bihar-example').addEventListener('click', async () => {
-    const message = state.appliances.length
-      ? 'This replaces your current list with a sample Bihar household. Your current entries will no longer be shown.'
-      : 'Load a sample Bihar household so you can see how the audit works?';
-    const ok = await confirmDialog(message, 'Load sample');
-    if (!ok) return;
-    try {
-      await createNewSession(true, true);
-    } catch (err) {
-      toast(err.message, 'error');
-    }
-  });
+  // Load sample data
+  $('btn-load-bihar-example').addEventListener('click', () => loadSampleData(false));
 
   // Simulator
   $('sim-appliance-select').addEventListener('change', () => {

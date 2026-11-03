@@ -19,7 +19,7 @@
     } catch (e) {}
   </script>
 </head>
-<body>
+<body class="is-loading">
 
   <div id="loading-bar" class="loading-bar" aria-hidden="true"></div>
   <a href="#main" class="skip-link">Skip to content</a>
@@ -51,7 +51,6 @@
       </div>
     </div>
 
-    <!-- Navigation Tabs -->
     <nav class="screen-tabs" aria-label="Main sections">
       <div class="tabs-container" role="tablist">
         <button class="nav-tab active" role="tab" aria-selected="true" data-screen="screen-dashboard">
@@ -90,90 +89,183 @@
         </div>
       </div>
 
-      <!-- KPI Summary Cards -->
-      <div class="kpi-grid">
-        <div class="kpi-card">
-          <div class="kpi-header">
-            <span class="kpi-label">Calculated Monthly Energy</span>
-            <span class="kpi-badge badge-neutral">Inventory</span>
-          </div>
-          <div class="kpi-value"><span id="kpi-calc-kwh" data-value="0">0.0</span> <span class="unit">kWh</span></div>
-          <div class="kpi-footer">Daily average: <strong id="kpi-calc-daily">0.00 kWh/day</strong></div>
+      <!-- Shown when the appliance list is empty -->
+      <div id="onboarding" class="onboarding panel-card" hidden>
+        <div class="onboarding-art" aria-hidden="true">⚡</div>
+        <h2 class="onboarding-title">Let's find where your electricity goes</h2>
+        <p class="onboarding-text">
+          Add the appliances you use, enter your latest bill, and get a personalised savings plan in seconds.
+          Your audit is tied to this visit. Refresh the page and you start over.
+        </p>
+        <div class="steps">
+          <div class="step"><span class="step-num">1</span><strong>Add appliances</strong><small>Name, wattage and daily hours</small></div>
+          <div class="step"><span class="step-num">2</span><strong>Enter your bill</strong><small>Units and amount from your bill</small></div>
+          <div class="step"><span class="step-num">3</span><strong>Get your plan</strong><small>Savings, payback and CO₂ impact</small></div>
         </div>
-
-        <div class="kpi-card">
-          <div class="kpi-header">
-            <span class="kpi-label">Actual Metered Energy</span>
-            <span class="kpi-badge badge-info">Utility Bill</span>
-          </div>
-          <div class="kpi-value"><span id="kpi-bill-kwh" data-value="0">0.0</span> <span class="unit">kWh</span></div>
-          <div class="kpi-footer">Actual bill: <strong id="kpi-bill-cost">₹0.00</strong></div>
-        </div>
-
-        <div class="kpi-card" id="kpi-drain-card">
-          <div class="kpi-header">
-            <span class="kpi-label">Unaccounted / Phantom Drain</span>
-            <span class="kpi-badge badge-warning" id="kpi-drain-badge">Standby Loss</span>
-          </div>
-          <div class="kpi-value warning-text"><span id="kpi-drain-kwh" data-value="0">0.0</span> <span class="unit">kWh</span></div>
-          <div class="kpi-footer">Hidden drain cost: <strong id="kpi-drain-cost">₹0.00/mo</strong></div>
-        </div>
-
-        <div class="kpi-card highlight-card">
-          <div class="kpi-header">
-            <span class="kpi-label">Potential Monthly Savings</span>
-            <span class="kpi-badge badge-success">Optimizable</span>
-          </div>
-          <div class="kpi-value success-text">₹<span id="kpi-savings-cost" data-value="0">0.00</span> <span class="unit">/mo</span></div>
-          <div class="kpi-footer">Annual reduction: <strong id="kpi-savings-annual">₹0.00/yr</strong></div>
+        <div class="onboarding-actions">
+          <button class="btn btn-primary" data-goto="screen-appliances">🔌 Add my appliances</button>
+          <button class="btn btn-outline" id="btn-onboard-sample">⚡ Try a sample household</button>
         </div>
       </div>
 
-      <!-- Bill reconciliation -->
-      <div class="panel-card mb-6">
-        <div class="panel-header">
-          <h3 class="panel-title">Bill Reconciliation</h3>
-          <span class="panel-tag">Inventory vs Meter</span>
-        </div>
-        <div class="recon-bar" role="img" aria-label="Share of billed energy explained by listed appliances">
-          <div class="recon-seg recon-accounted" id="recon-accounted" style="width:0%"></div>
-          <div class="recon-seg recon-drain" id="recon-drain" style="width:0%"></div>
-        </div>
-        <div class="recon-legend">
-          <span><i class="dot dot-green"></i> Explained by appliances</span>
-          <span><i class="dot dot-amber"></i> Unexplained</span>
-        </div>
-        <p class="recon-text" id="recon-text">—</p>
-      </div>
+      <div id="dash-content" class="dash-content">
 
-      <!-- Breakdown Visuals -->
-      <div class="dashboard-grid">
-        <div class="panel-card chart-panel">
+        <!-- Hero: efficiency score -->
+        <div class="hero" id="hero" data-tone="good">
+          <span class="hero-blob hero-blob-1" aria-hidden="true"></span>
+          <span class="hero-blob hero-blob-2" aria-hidden="true"></span>
+          <div class="hero-gauge" id="score-gauge" role="img" aria-label="Energy efficiency score"></div>
+          <div class="hero-body">
+            <span class="eyebrow">Energy efficiency score</span>
+            <h2 class="hero-title" id="score-label">—</h2>
+            <p class="hero-detail" id="score-detail"></p>
+            <div class="hero-chips" id="hero-chips"></div>
+            <small class="hero-note">Indicative score: starts at 100 and drops for upgrade potential and for mismatch between your bill and your appliance list.</small>
+          </div>
+        </div>
+
+        <!-- KPI Summary Cards -->
+        <div class="kpi-grid">
+          <div class="kpi-card">
+            <div class="kpi-header">
+              <span class="kpi-label">Calculated Monthly Energy</span>
+              <span class="kpi-badge badge-neutral">Inventory</span>
+            </div>
+            <div class="kpi-value"><span id="kpi-calc-kwh" data-value="0">0.0</span> <span class="unit">kWh</span></div>
+            <div class="kpi-footer">Daily average: <strong id="kpi-calc-daily">0.00 kWh/day</strong></div>
+          </div>
+
+          <div class="kpi-card">
+            <div class="kpi-header">
+              <span class="kpi-label">Actual Metered Energy</span>
+              <span class="kpi-badge badge-info">Utility Bill</span>
+            </div>
+            <div class="kpi-value"><span id="kpi-bill-kwh" data-value="0">0.0</span> <span class="unit">kWh</span></div>
+            <div class="kpi-footer">Actual bill: <strong id="kpi-bill-cost">₹0.00</strong></div>
+          </div>
+
+          <div class="kpi-card" id="kpi-drain-card">
+            <div class="kpi-header">
+              <span class="kpi-label">Unaccounted / Phantom Drain</span>
+              <span class="kpi-badge badge-warning" id="kpi-drain-badge">Standby Loss</span>
+            </div>
+            <div class="kpi-value warning-text"><span id="kpi-drain-kwh" data-value="0">0.0</span> <span class="unit">kWh</span></div>
+            <div class="kpi-footer">Hidden drain cost: <strong id="kpi-drain-cost">₹0.00/mo</strong></div>
+          </div>
+
+          <div class="kpi-card highlight-card">
+            <div class="kpi-header">
+              <span class="kpi-label">Potential Monthly Savings</span>
+              <span class="kpi-badge badge-success">Optimizable</span>
+            </div>
+            <div class="kpi-value success-text">₹<span id="kpi-savings-cost" data-value="0">0.00</span> <span class="unit">/mo</span></div>
+            <div class="kpi-footer">Annual reduction: <strong id="kpi-savings-annual">₹0.00/yr</strong></div>
+          </div>
+        </div>
+
+        <!-- Reconciliation + Carbon -->
+        <div class="dashboard-grid">
+          <div class="panel-card">
+            <div class="panel-header">
+              <h3 class="panel-title">Bill Reconciliation</h3>
+              <span class="panel-tag">Inventory vs Meter</span>
+            </div>
+            <div class="recon-bar" role="img" aria-label="Share of billed energy explained by listed appliances">
+              <div class="recon-seg recon-accounted" id="recon-accounted" style="width:0%"></div>
+              <div class="recon-seg recon-drain" id="recon-drain" style="width:0%"></div>
+            </div>
+            <div class="recon-legend">
+              <span><i class="dot dot-green"></i> Explained by appliances</span>
+              <span><i class="dot dot-amber"></i> Unexplained</span>
+            </div>
+            <p class="recon-text" id="recon-text">—</p>
+          </div>
+
+          <div class="panel-card carbon-card">
+            <div class="panel-header">
+              <h3 class="panel-title">Carbon Footprint</h3>
+              <span class="panel-tag">Estimate</span>
+            </div>
+            <div class="carbon-main">
+              <span class="carbon-leaf" aria-hidden="true">🌿</span>
+              <div>
+                <div class="carbon-value"><span id="co2-month" data-value="0">0</span> <small>kg CO₂ / month</small></div>
+                <div class="carbon-sub" id="co2-year"></div>
+              </div>
+            </div>
+            <div class="carbon-trees" id="carbon-trees" aria-hidden="true"></div>
+            <p class="carbon-note" id="carbon-note"></p>
+            <small class="form-hint">Rough figures: about 0.8 kg CO₂ per kWh (Indian grid average) and about 21 kg CO₂ absorbed per tree per year.</small>
+          </div>
+        </div>
+
+        <!-- Breakdown Visuals -->
+        <div class="dashboard-grid">
+          <div class="panel-card chart-panel">
+            <div class="panel-header">
+              <h3 class="panel-title">Consumption by Category</h3>
+              <span class="panel-tag">Hover a slice</span>
+            </div>
+            <div class="chart-content">
+              <div id="category-chart-container" class="svg-chart-container" role="img" aria-label="Donut chart of energy by category"></div>
+              <div id="category-legend" class="category-legend-list"></div>
+            </div>
+          </div>
+
+          <div class="panel-card">
+            <div class="panel-header">
+              <h3 class="panel-title">Top Energy-Consuming Appliances</h3>
+              <span class="panel-tag">Pareto Analysis</span>
+            </div>
+            <div class="top-appliances-list" id="top-appliances-list"></div>
+          </div>
+        </div>
+
+        <!-- Slab ladder -->
+        <div class="panel-card">
           <div class="panel-header">
-            <h3 class="panel-title">Consumption by Category</h3>
-            <span class="panel-tag">Load Breakdown</span>
+            <h3 class="panel-title">Tariff Slab Ladder</h3>
+            <span class="panel-tag">Where you sit</span>
           </div>
-          <div class="chart-content">
-            <div id="category-chart-container" class="svg-chart-container" role="img" aria-label="Donut chart of energy by category"></div>
-            <div id="category-legend" class="category-legend-list"></div>
+          <div id="slab-ladder"></div>
+          <p class="recon-text" id="slab-message"></p>
+        </div>
+
+        <!-- Projection + What-if -->
+        <div class="dashboard-grid">
+          <div class="panel-card">
+            <div class="panel-header">
+              <h3 class="panel-title">12-Month Savings Projection</h3>
+              <span class="panel-tag">Net of upgrade cost</span>
+            </div>
+            <div id="projection-chart" class="line-chart-container" role="img" aria-label="Line chart of cumulative net savings over 12 months"></div>
+            <p class="recon-text" id="projection-note"></p>
+          </div>
+
+          <div class="panel-card">
+            <div class="panel-header">
+              <h3 class="panel-title">Quick What-If</h3>
+              <span class="panel-tag">Interactive</span>
+            </div>
+            <p class="rec-desc">What if you cut your total electricity usage by…</p>
+            <div class="whatif-big"><span id="whatif-pct">10</span><small>%</small></div>
+            <input type="range" id="whatif-slider" min="0" max="50" step="1" value="10" class="form-range" aria-label="Percentage reduction in usage">
+            <div class="whatif-grid">
+              <div class="whatif-box"><span class="label">Energy saved / month</span><strong id="whatif-kwh">0 kWh</strong></div>
+              <div class="whatif-box"><span class="label">Money saved / month</span><strong class="success-text" id="whatif-month">₹0</strong></div>
+              <div class="whatif-box"><span class="label">Money saved / year</span><strong class="success-text" id="whatif-year">₹0</strong></div>
+              <div class="whatif-box"><span class="label">CO₂ avoided / year</span><strong id="whatif-co2">0 kg</strong></div>
+            </div>
           </div>
         </div>
 
         <div class="panel-card">
           <div class="panel-header">
-            <h3 class="panel-title">Top Energy-Consuming Appliances</h3>
-            <span class="panel-tag">Pareto Analysis</span>
+            <h3 class="panel-title">Priority Audit Insights & Action Plan</h3>
+            <span class="panel-tag">Rule Engine</span>
           </div>
-          <div class="top-appliances-list" id="top-appliances-list"></div>
+          <div class="recommendations-container" id="dashboard-recommendations-list"></div>
         </div>
-      </div>
-
-      <div class="panel-card mt-6">
-        <div class="panel-header">
-          <h3 class="panel-title">Priority Audit Insights & Action Plan</h3>
-          <span class="panel-tag">Rule Engine</span>
-        </div>
-        <div class="recommendations-container" id="dashboard-recommendations-list"></div>
       </div>
     </section>
 
@@ -207,12 +299,12 @@
             <div class="form-row">
               <div class="form-group">
                 <label for="actual-units">Total Units Billed (kWh)</label>
-                <input type="number" step="0.1" min="0" id="actual-units" class="form-input" value="145" required>
+                <input type="number" step="0.1" min="0" id="actual-units" class="form-input" required>
                 <small class="form-hint">"Current reading − previous reading" on your bill</small>
               </div>
               <div class="form-group">
                 <label for="actual-amount">Total Billed Amount (₹)</label>
-                <input type="number" step="0.5" min="0" id="actual-amount" class="form-input" value="1160" required>
+                <input type="number" step="0.5" min="0" id="actual-amount" class="form-input" required>
                 <small class="form-hint">Net payable amount including duty</small>
               </div>
             </div>
@@ -265,12 +357,18 @@
         </div>
         <div class="header-actions">
           <button class="btn btn-outline" id="btn-export-appliances">⬇ Export CSV</button>
-          <button class="btn btn-outline" id="btn-load-bihar-example">⚡ Reset to Bihar Example</button>
+          <button class="btn btn-outline" id="btn-load-bihar-example">⚡ Load Sample Data</button>
         </div>
       </div>
 
       <div class="panel-card mb-6">
-        <form id="form-add-appliance" class="quick-add-grid">
+        <div class="quick-add-head">
+          <strong>Quick add</strong>
+          <span class="form-hint">Tap a chip to fill the form, then set the quantity and press Add.</span>
+        </div>
+        <div class="chip-row" id="quick-chips"></div>
+
+        <form id="form-add-appliance" class="quick-add-grid mt-4">
           <div class="form-group">
             <label for="app-name">Appliance Name / Preset</label>
             <input type="text" id="app-name" class="form-input" placeholder="e.g. Ceiling Fan, Geyser" required maxlength="100" list="appliance-presets" autocomplete="off">
@@ -303,7 +401,6 @@
             <button type="submit" class="btn btn-primary w-full">+ Add Appliance</button>
           </div>
         </form>
-        <p class="form-hint mt-4">Tip: choose a preset from the name box to auto-fill category, wattage and typical hours.</p>
       </div>
 
       <div class="panel-card">
