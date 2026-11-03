@@ -1,5 +1,9 @@
 /**
  * UrjaAudit Core Frontend Application Controller
+ *
+ * Every page load starts a brand-new, empty audit session.
+ * The session id is kept in memory only (never saved in the browser),
+ * so each visitor and each refresh starts with an empty appliance list.
  */
 
 // -------------------------------------------------------------
@@ -8,7 +12,7 @@
 const $ = (id) => document.getElementById(id);
 
 const state = {
-  sessionId: localStorage.getItem('urja_session_id') || null,
+  sessionId: null,
   activeScreen: 'screen-dashboard',
   summary: null,
   appliances: [],
@@ -189,6 +193,13 @@ function switchScreen(screenId, updateHash = true) {
 // -------------------------------------------------------------
 async function initApp() {
   applyTheme(document.documentElement.getAttribute('data-theme') || 'light');
+
+  // The old version saved a session id in the browser. Remove it so nothing is reused.
+  try { localStorage.removeItem('urja_session_id'); } catch { /* ignore */ }
+
+  // The button now loads sample data on demand (refresh always starts empty)
+  $('btn-load-bihar-example').textContent = '⚡ Load Sample Data';
+
   buildPresetList();
   setupEventListeners();
 
@@ -196,35 +207,27 @@ async function initApp() {
   if (hash) switchScreen(`screen-${hash}`, false);
 
   try {
-    if (!state.sessionId) {
-      await createNewSession(false);
-    } else {
-      await refreshAllData();
-    }
+    await createNewSession(false, false); // always a fresh, empty session
   } catch (err) {
-    // Session might have been deleted from the DB — start fresh.
-    try {
-      await createNewSession(false);
-    } catch (err2) {
-      toast(`Could not reach the server: ${err2.message}`, 'error');
-    }
+    toast(`Could not reach the server: ${err.message}`, 'error');
   }
 }
 
-async function createNewSession(announce = true) {
+async function createNewSession(announce = true, withSample = false) {
   const data = await api('/api/session/init', {
     method: 'POST',
     body: JSON.stringify({
       property_name: 'Household (Bihar)',
       property_type: 'Household',
       state_region: 'Bihar',
-      sanctioned_load_kw: 2.0
+      sanctioned_load_kw: 2.0,
+      with_sample: withSample
     })
   });
-  state.sessionId = data.sessionId;
-  localStorage.setItem('urja_session_id', state.sessionId);
+  state.sessionId = data.sessionId; // memory only, gone on refresh
+  state.roiTariffSeeded = false;
   await refreshAllData();
-  if (announce) toast('Bihar household example loaded');
+  if (announce) toast(withSample ? 'Sample household loaded' : 'Started a new empty audit');
 }
 
 async function refreshAllData() {
@@ -277,23 +280,29 @@ function renderHeader() {
 function renderDashboard() {
   if (!state.summary || !state.summary.metrics) return;
   const m = state.summary.metrics;
+  const hasBill = !!state.bill;
 
   animateText($('kpi-calc-kwh'), m.totalCalculatedMonthlyKwh, (v) => num(v, 1));
   $('kpi-calc-daily').textContent = `${num(m.totalCalculatedDailyKwh, 2)} kWh/day`;
 
-  animateText($('kpi-bill-kwh'), m.actualUnitsKwh, (v) => num(v, 1));
-  $('kpi-bill-cost').textContent = inr(m.actualBillAmount);
+  animateText($('kpi-bill-kwh'), hasBill ? m.actualUnitsKwh : 0, (v) => num(v, 1));
+  $('kpi-bill-cost').textContent = hasBill ? inr(m.actualBillAmount) : 'Not entered';
 
   animateText($('kpi-drain-kwh'), m.unaccountedUnits, (v) => num(v, 1));
   $('kpi-drain-cost').textContent = `${inr(m.unaccountedCost)}/mo`;
   const badge = $('kpi-drain-badge');
-  badge.textContent = m.unaccountedUnits > 0 ? 'Standby Loss' : 'Matched';
-  badge.className = `kpi-badge ${m.unaccountedUnits > 0 ? 'badge-warning' : 'badge-success'}`;
+  if (!hasBill) {
+    badge.textContent = 'No bill yet';
+    badge.className = 'kpi-badge badge-neutral';
+  } else {
+    badge.textContent = m.unaccountedUnits > 0 ? 'Standby Loss' : 'Matched';
+    badge.className = `kpi-badge ${m.unaccountedUnits > 0 ? 'badge-warning' : 'badge-success'}`;
+  }
 
   animateText($('kpi-savings-cost'), m.totalPotentialSavingsMonthly, (v) => num(v, 2));
   $('kpi-savings-annual').textContent = `${inr(m.totalPotentialSavingsMonthly * 12)}/yr`;
 
-  renderReconciliation(m);
+  renderReconciliation(m, hasBill);
 
   // Top appliances
   const topList = $('top-appliances-list');
@@ -336,10 +345,17 @@ function renderDashboard() {
     legend.appendChild(row);
   });
 
-  renderRecommendationsList('dashboard-recommendations-list', state.summary.recommendations || []);
+  renderRecommendationsList('dashboard-recommendations-list', state.summary.recommendations || [], state.appliances.length);
 }
 
-function renderReconciliation(m) {
+function renderReconciliation(m, hasBill) {
+  if (!hasBill || m.actualUnitsKwh <= 0) {
+    $('recon-accounted').style.width = '0%';
+    $('recon-drain').style.width = '0%';
+    $('recon-text').textContent = 'Enter your billed units on the Bill & Tariff tab to see how well your appliance list matches your meter.';
+    return;
+  }
+
   const total = Math.max(m.actualUnitsKwh, m.totalCalculatedMonthlyKwh, 0.0001);
   const accounted = Math.min(m.actualUnitsKwh, m.totalCalculatedMonthlyKwh);
   const accPct = (accounted / total) * 100;
@@ -349,9 +365,7 @@ function renderReconciliation(m) {
   $('recon-drain').style.width = `${drainPct}%`;
 
   let text;
-  if (m.actualUnitsKwh <= 0) {
-    text = 'Enter your billed units on the Bill & Tariff tab to see how well your inventory matches your meter.';
-  } else if (m.unaccountedUnits > 0) {
+  if (m.unaccountedUnits > 0) {
     text = `Your appliances explain ${num(accPct, 0)}% of the ${num(m.actualUnitsKwh, 1)} kWh on your bill. ${num(m.unaccountedUnits, 1)} kWh (${inr(m.unaccountedCost)}/month) is unexplained — check for missing appliances or standby loads.`;
   } else if (m.totalCalculatedMonthlyKwh > m.actualUnitsKwh * 1.05) {
     text = `Your inventory (${num(m.totalCalculatedMonthlyKwh, 1)} kWh) is higher than your bill (${num(m.actualUnitsKwh, 1)} kWh). Check that wattage and daily hours are not overstated.`;
@@ -361,13 +375,15 @@ function renderReconciliation(m) {
   $('recon-text').textContent = text;
 }
 
-function renderRecommendationsList(containerId, recs) {
+function renderRecommendationsList(containerId, recs, applianceCount = 1) {
   const container = $(containerId);
   if (!container) return;
   container.innerHTML = '';
 
   if (!recs.length) {
-    container.innerHTML = '<div class="empty-state"><span class="big">🎉</span>No immediate issues detected. Your usage matches expected load.</div>';
+    container.innerHTML = applianceCount === 0
+      ? '<div class="empty-state"><span class="big">📝</span>Add your appliances on the Appliance Inventory tab to get personalised savings tips.</div>'
+      : '<div class="empty-state"><span class="big">🎉</span>No immediate issues detected. Your usage matches expected load.</div>';
     return;
   }
 
@@ -408,32 +424,42 @@ function renderBillForm() {
     $('actual-units').value = state.bill.actual_units_kwh;
     $('actual-amount').value = state.bill.actual_bill_amount;
     $('bill-month').value = state.bill.billing_month || 'Current Month';
+  } else {
+    // Fresh session: nothing entered yet
+    $('actual-units').value = '';
+    $('actual-amount').value = '';
+    $('bill-month').value = 'Current Month';
   }
   updateBillPreview();
 }
 
 function updateBillPreview() {
   const box = $('bill-preview');
-  const units = Number($('actual-units').value);
+  const unitsRaw = $('actual-units').value;
+  const units = Number(unitsRaw);
   const amount = Number($('actual-amount').value);
   const load = Number($('sanctioned-load').value) || 0;
   const est = estimateBill(units, state.tariffs, load);
 
-  if (!est || !Number.isFinite(units)) {
-    box.innerHTML = '<span>Enter units to preview the estimated bill.</span>';
+  if (!est || unitsRaw === '' || !Number.isFinite(units)) {
+    box.innerHTML = '<span>Enter the units from your bill to preview the estimated amount.</span>';
     return;
   }
 
+  const hasAmount = $('actual-amount').value !== '';
   const diff = amount - est.total;
-  const diffClass = Math.abs(diff) <= est.total * 0.05 ? 'diff-ok' : 'diff-warn';
-  const diffText = Math.abs(diff) <= est.total * 0.05
-    ? 'Matches the slab estimate'
-    : diff > 0 ? `${inr(diff)} above estimate (arrears, surcharges or meter rent?)` : `${inr(-diff)} below estimate`;
+  const close = Math.abs(diff) <= est.total * 0.05;
+  const diffClass = close ? 'diff-ok' : 'diff-warn';
+  const diffText = !hasAmount
+    ? 'Enter your billed amount to compare'
+    : close
+      ? 'Matches the slab estimate'
+      : diff > 0 ? `${inr(diff)} above estimate (arrears, surcharges or meter rent?)` : `${inr(-diff)} below estimate`;
 
   box.innerHTML = `
     <div class="row"><span>Estimated bill for ${num(units, 1)} kWh</span><strong>${inr(est.total)}</strong></div>
     <div class="row"><span>Energy · Fixed · Duty</span><span>${inr(est.energy)} · ${inr(est.fixed)} · ${inr(est.duty)}</span></div>
-    <div class="row"><span>Your entered amount</span><span class="${diffClass}">${esc(diffText)}</span></div>`;
+    <div class="row"><span>Your entered amount</span><span class="${hasAmount ? diffClass : ''}">${esc(diffText)}</span></div>`;
 }
 
 function renderTariffBreakdown() {
@@ -444,7 +470,7 @@ function renderTariffBreakdown() {
 
   const slabs = t.slabBreakdown || [];
   if (!slabs.length) {
-    tbody.innerHTML = '<tr><td colspan="4"><div class="empty-state">No consumption to bill yet.</div></td></tr>';
+    tbody.innerHTML = '<tr><td colspan="4"><div class="empty-state">Add appliances to see how the tariff slabs apply.</div></td></tr>';
   }
   slabs.forEach((slab, i) => {
     const tr = document.createElement('tr');
@@ -502,7 +528,7 @@ function renderAppliancesTable() {
 
   if (!visible.length) {
     tbody.innerHTML = `<tr><td colspan="10"><div class="empty-state"><span class="big">🔎</span>${
-      state.appliances.length ? 'No appliances match your filters.' : 'No appliances yet — add your first one above.'
+      state.appliances.length ? 'No appliances match your filters.' : 'Your list is empty — add your first appliance above.'
     }</div></td></tr>`;
     tfoot.innerHTML = '';
     return;
@@ -557,6 +583,7 @@ function openEditDialog(id) {
 }
 
 function exportAppliancesCSV() {
+  if (!state.appliances.length) return toast('Add some appliances before exporting', 'info');
   const marginalRate = state.summary?.metrics?.marginalRate || 8.0;
   const rows = [['Appliance', 'Category', 'Quantity', 'Power (W)', 'Hours/day', 'Daily kWh', 'Monthly kWh', 'Est. monthly cost (INR)']];
   state.appliances.forEach((a) => rows.push([
@@ -576,7 +603,7 @@ function populateSimulatorApplianceDropdown() {
   select.innerHTML = '';
 
   if (!state.appliances.length) {
-    select.innerHTML = '<option value="">No appliances available</option>';
+    select.innerHTML = '<option value="">Add appliances first</option>';
     triggerUsageSimulation();
     return;
   }
@@ -663,13 +690,14 @@ function renderReport() {
   if (!state.summary) return;
   const m = state.summary.metrics;
   const session = state.summary.session;
+  const hasBill = !!state.bill;
 
   $('report-property').textContent = `${session.property_name} · Electricity Savings & Energy Efficiency Audit`;
   $('report-load').textContent = num(session.sanctioned_load_kw, 1);
   $('report-date-string').textContent = `Date: ${new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })}`;
 
-  $('rep-actual-kwh').textContent = `${num(m.actualUnitsKwh, 1)} kWh`;
-  $('rep-actual-cost').textContent = inr(m.actualBillAmount);
+  $('rep-actual-kwh').textContent = hasBill ? `${num(m.actualUnitsKwh, 1)} kWh` : '—';
+  $('rep-actual-cost').textContent = hasBill ? inr(m.actualBillAmount) : 'Bill not entered';
   $('rep-calc-kwh').textContent = `${num(m.totalCalculatedMonthlyKwh, 1)} kWh`;
   $('rep-calc-cost').textContent = inr(m.estimatedCalculatedBill);
   $('rep-drain-kwh').textContent = `${num(m.unaccountedUnits, 1)} kWh`;
@@ -679,6 +707,9 @@ function renderReport() {
   const tbody = $('report-appliances-tbody');
   tbody.innerHTML = '';
   const marginalRate = m.marginalRate || 8.0;
+  if (!state.appliances.length) {
+    tbody.innerHTML = '<tr><td colspan="8">No appliances added yet.</td></tr>';
+  }
   state.appliances.forEach((a) => {
     const share = m.totalCalculatedMonthlyKwh > 0 ? (a.monthlyKwh / m.totalCalculatedMonthlyKwh) * 100 : 0;
     const tr = document.createElement('tr');
@@ -697,7 +728,7 @@ function renderReport() {
   const recContainer = $('report-recommendations-list');
   recContainer.innerHTML = '';
   const recs = state.summary.recommendations || [];
-  if (!recs.length) recContainer.innerHTML = '<p class="rec-desc">No action items — usage matches expected load.</p>';
+  if (!recs.length) recContainer.innerHTML = '<p class="rec-desc">No action items yet — add appliances and your bill to generate recommendations.</p>';
   recs.forEach((r) => {
     const div = document.createElement('div');
     div.className = 'report-rec-item';
@@ -715,11 +746,12 @@ function renderReport() {
 function exportReportCSV() {
   if (!state.summary) return;
   const m = state.summary.metrics;
+  const hasBill = !!state.bill;
   const rows = [
     ['UrjaAudit Summary'],
     ['Property', state.summary.session.property_name],
-    ['Actual metered (kWh)', m.actualUnitsKwh],
-    ['Actual bill (INR)', m.actualBillAmount],
+    ['Actual metered (kWh)', hasBill ? m.actualUnitsKwh : 'not entered'],
+    ['Actual bill (INR)', hasBill ? m.actualBillAmount : 'not entered'],
     ['Calculated load (kWh)', m.totalCalculatedMonthlyKwh],
     ['Estimated bill from inventory (INR)', m.estimatedCalculatedBill],
     ['Unexplained drain (kWh)', m.unaccountedUnits],
@@ -882,13 +914,15 @@ function setupEventListeners() {
     }
   });
 
-  // Reset example
+  // Load sample data (replaces the current empty/own list with the sample household)
   $('btn-load-bihar-example').addEventListener('click', async () => {
-    const ok = await confirmDialog('This starts a fresh audit with the Bihar household example. Your current session data will no longer be shown.', 'Start fresh');
+    const message = state.appliances.length
+      ? 'This replaces your current list with a sample Bihar household. Your current entries will no longer be shown.'
+      : 'Load a sample Bihar household so you can see how the audit works?';
+    const ok = await confirmDialog(message, 'Load sample');
     if (!ok) return;
     try {
-      state.roiTariffSeeded = false;
-      await createNewSession(true);
+      await createNewSession(true, true);
     } catch (err) {
       toast(err.message, 'error');
     }

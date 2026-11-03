@@ -40,12 +40,40 @@ function validateAppliance(body) {
   return null;
 }
 
+/**
+ * Every page load creates a new anonymous session, so old ones pile up.
+ * Delete sessions (and their data) older than 24 hours.
+ */
+async function cleanupOldSessions() {
+  const oldIds = 'SELECT id FROM audit_sessions WHERE created_at < (NOW() - INTERVAL 1 DAY)';
+  // Child tables first, in case foreign keys were created without ON DELETE CASCADE
+  for (const table of ['retrofit_scenarios', 'bill_records', 'appliances']) {
+    try {
+      await db.execute(`DELETE FROM ${table} WHERE session_id IN (${oldIds})`);
+    } catch (err) {
+      // Table may not exist in your database; safe to ignore
+    }
+  }
+  try {
+    const [result] = await db.execute('DELETE FROM audit_sessions WHERE created_at < (NOW() - INTERVAL 1 DAY)');
+    if (result.affectedRows > 0) console.log(`🧹 Removed ${result.affectedRows} expired session(s)`);
+  } catch (err) {
+    console.error('Session cleanup failed:', err.message);
+  }
+}
+
 // -------------------------------------------------------------
 // 1. Session & Overview APIs
 // -------------------------------------------------------------
 app.post('/api/session/init', async (req, res) => {
   try {
-    const { property_name = 'My Home', property_type = 'Household', state_region = 'Bihar', sanctioned_load_kw = 2.0 } = req.body;
+    const {
+      property_name = 'My Home',
+      property_type = 'Household',
+      state_region = 'Bihar',
+      sanctioned_load_kw = 2.0,
+      with_sample = false
+    } = req.body;
     const sessionId = crypto.randomUUID();
 
     await db.execute(`
@@ -53,24 +81,27 @@ app.post('/api/session/init', async (req, res) => {
       VALUES (?, ?, ?, ?, ?)
     `, [sessionId, property_name, property_type, state_region, sanctioned_load_kw]);
 
-    const defaultAppliances = [
-      { name: 'LED Bulbs', category: 'Lighting', qty: 5, wattage: 9, hours: 6 },
-      { name: 'Ceiling Fans', category: 'Cooling', qty: 3, wattage: 75, hours: 10 },
-      { name: 'Television', category: 'Entertainment', qty: 1, wattage: 100, hours: 4 },
-      { name: 'Refrigerator (Frost-Free)', category: 'Refrigeration', qty: 1, wattage: 150, hours: 8 }
-    ];
+    // Sample data is only added when explicitly requested; new sessions start empty.
+    if (with_sample === true) {
+      const defaultAppliances = [
+        { name: 'LED Bulbs', category: 'Lighting', qty: 5, wattage: 9, hours: 6 },
+        { name: 'Ceiling Fans', category: 'Cooling', qty: 3, wattage: 75, hours: 10 },
+        { name: 'Television', category: 'Entertainment', qty: 1, wattage: 100, hours: 4 },
+        { name: 'Refrigerator (Frost-Free)', category: 'Refrigeration', qty: 1, wattage: 150, hours: 8 }
+      ];
 
-    for (const item of defaultAppliances) {
+      for (const item of defaultAppliances) {
+        await db.execute(`
+          INSERT INTO appliances (session_id, appliance_name, category, quantity, wattage, daily_hours, days_per_month)
+          VALUES (?, ?, ?, ?, ?, ?, 30)
+        `, [sessionId, item.name, item.category, item.qty, item.wattage, item.hours]);
+      }
+
       await db.execute(`
-        INSERT INTO appliances (session_id, appliance_name, category, quantity, wattage, daily_hours, days_per_month)
-        VALUES (?, ?, ?, ?, ?, ?, 30)
-      `, [sessionId, item.name, item.category, item.qty, item.wattage, item.hours]);
+        INSERT INTO bill_records (session_id, billing_month, actual_units_kwh, actual_bill_amount)
+        VALUES (?, 'Current Month', 145.0, 1160.0)
+      `, [sessionId]);
     }
-
-    await db.execute(`
-      INSERT INTO bill_records (session_id, billing_month, actual_units_kwh, actual_bill_amount)
-      VALUES (?, 'Current Month', 145.0, 1160.0)
-    `, [sessionId]);
 
     res.json({ success: true, sessionId });
   } catch (err) {
@@ -353,7 +384,6 @@ app.use('/api', (req, res) => {
 });
 
 app.use((err, req, res, next) => {
-  // Malformed JSON bodies etc.
   res.status(err.status || 500).json({ error: err.message || 'Unexpected server error' });
 });
 
@@ -362,4 +392,8 @@ app.listen(PORT, () => {
   console.log(`⚡ UrjaAudit Energy Assistant Server Running`);
   console.log(`🌐 Local Web Portal: http://localhost:${PORT}`);
   console.log(`======================================================\n`);
+
+  // Clear out expired anonymous sessions now, then once an hour
+  cleanupOldSessions();
+  setInterval(cleanupOldSessions, 60 * 60 * 1000);
 });
