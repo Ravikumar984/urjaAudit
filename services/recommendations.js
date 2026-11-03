@@ -2,11 +2,16 @@
  * UrjaAudit Explainable Recommendation Engine
  */
 
+const isAirConditioner = (a) => {
+  const n = String(a.appliance_name || '').toLowerCase();
+  return /\bacs?\b/.test(n) || n.includes('air conditioner') || n.includes('air-conditioner') || Number(a.wattage) >= 1200 && a.category === 'Cooling';
+};
+
 function generateAuditRecommendations(auditData) {
   const { appliances, billRecord, tariffBreakdown, calculatedTotalUnits } = auditData;
   const recommendations = [];
 
-  const actualUnits = billRecord ? billRecord.actual_units_kwh : calculatedTotalUnits;
+  const actualUnits = billRecord ? Number(billRecord.actual_units_kwh) : calculatedTotalUnits;
   const marginalRate = tariffBreakdown.marginalRatePerUnit || 8.0;
 
   // 1. Unaccounted Phantom Energy Drain Analysis
@@ -32,75 +37,79 @@ function generateAuditRecommendations(auditData) {
     }
   }
 
-  // 2. Ceiling Fans Optimization (BLDC Retrofit)
-  const fans = appliances.filter(a => a.appliance_name.toLowerCase().includes('fan') || a.category === 'Cooling');
-  const heavyFans = fans.filter(f => f.wattage >= 65);
+  // 2. Ceiling Fans Optimization (BLDC Retrofit) - only real fans, not ACs, and not already-efficient BLDC models
+  const fans = appliances.filter(a => {
+    const n = String(a.appliance_name || '').toLowerCase();
+    return n.includes('fan') && !n.includes('bldc');
+  });
+  const heavyFans = fans.filter(f => Number(f.wattage) >= 65 && Number(f.wattage) < 300);
 
   if (heavyFans.length > 0) {
-    const totalFanQty = heavyFans.reduce((sum, f) => sum + f.quantity, 0);
-    const avgHours = heavyFans.reduce((sum, f) => sum + f.daily_hours, 0) / heavyFans.length;
-    // Retrofit 75W Fan with 28W BLDC Fan
+    const totalFanQty = heavyFans.reduce((sum, f) => sum + Number(f.quantity), 0);
+    const avgHours = heavyFans.reduce((sum, f) => sum + Number(f.daily_hours), 0) / heavyFans.length;
     const savedWatts = 75 - 28;
     const savedUnits = (savedWatts * totalFanQty * avgHours * 30) / 1000;
     const monthlySavings = savedUnits * marginalRate;
-    const capitalCost = totalFanQty * 2400; // ~₹2400 per 5-star BLDC Fan
+    const capitalCost = totalFanQty * 2400;
 
-    recommendations.push({
-      id: 'REC_BLDC_FAN',
-      category: 'Appliance Upgrade',
-      priority: avgHours >= 8 ? 'HIGH' : 'MEDIUM',
-      title: `Retrofit ${totalFanQty}x Conventional Fans to 5-Star BLDC Fans`,
-      description: `Replacing 75W induction fans with 28W Brushless DC (BLDC) motor fans preserves airflow while cutting electricity consumption by 62%.`,
-      reason: `Fans run for ${avgHours.toFixed(1)} hours/day. Because cooling is a high-duty-cycle load, wattage reductions translate directly into fast ROI.`,
-      estimatedMonthlySavings: Number(monthlySavings.toFixed(2)),
-      estimatedPaybackMonths: Number((capitalCost / monthlySavings).toFixed(1)),
-      actionItems: [
-        `Replace ${totalFanQty} conventional induction fan(s) with BEE 5-Star rated BLDC fans (e.g., Atomberg, Crompton Energion, Havells Stealth).`,
-        `Estimated upfront cost: ₹${capitalCost}. Payback period: ~${(capitalCost / monthlySavings).toFixed(1)} months.`
-      ]
-    });
+    if (monthlySavings > 0) {
+      recommendations.push({
+        id: 'REC_BLDC_FAN',
+        category: 'Appliance Upgrade',
+        priority: avgHours >= 8 ? 'HIGH' : 'MEDIUM',
+        title: `Retrofit ${totalFanQty}x Conventional Fans to 5-Star BLDC Fans`,
+        description: `Replacing 75W induction fans with 28W Brushless DC (BLDC) motor fans preserves airflow while cutting electricity consumption by 62%.`,
+        reason: `Fans run for ${avgHours.toFixed(1)} hours/day. Because cooling is a high-duty-cycle load, wattage reductions translate directly into fast ROI.`,
+        estimatedMonthlySavings: Number(monthlySavings.toFixed(2)),
+        estimatedPaybackMonths: Number((capitalCost / monthlySavings).toFixed(1)),
+        actionItems: [
+          `Replace ${totalFanQty} conventional induction fan(s) with BEE 5-Star rated BLDC fans (e.g., Atomberg, Crompton Energion, Havells Stealth).`,
+          `Estimated upfront cost: ₹${capitalCost}. Payback period: ~${(capitalCost / monthlySavings).toFixed(1)} months.`
+        ]
+      });
+    }
   }
 
   // 3. Lighting Efficiency (CFL/Incandescent/Fluorescent Tube to LED)
-  const legacyLighting = appliances.filter(a =>
-    a.category === 'Lighting' &&
-    (a.wattage >= 20 || a.appliance_name.toLowerCase().includes('tube') || a.appliance_name.toLowerCase().includes('cfl'))
-  );
+  const legacyLighting = appliances.filter(a => {
+    const n = String(a.appliance_name || '').toLowerCase();
+    return a.category === 'Lighting' && (Number(a.wattage) >= 20 || n.includes('tube') || n.includes('cfl'));
+  });
 
   if (legacyLighting.length > 0) {
-    const qty = legacyLighting.reduce((s, l) => s + l.quantity, 0);
-    const avgWatts = legacyLighting.reduce((s, l) => s + l.wattage, 0) / legacyLighting.length;
+    const qty = legacyLighting.reduce((s, l) => s + Number(l.quantity), 0);
+    const avgWatts = legacyLighting.reduce((s, l) => s + Number(l.wattage), 0) / legacyLighting.length;
     const ledWatts = 9;
-    const avgHrs = legacyLighting.reduce((s, l) => s + l.daily_hours, 0) / legacyLighting.length;
+    const avgHrs = legacyLighting.reduce((s, l) => s + Number(l.daily_hours), 0) / legacyLighting.length;
 
-    const savedUnits = ((avgWatts - ledWatts) * qty * avgHrs * 30) / 1000;
+    const savedUnits = (Math.max(0, avgWatts - ledWatts) * qty * avgHrs * 30) / 1000;
     const monthlySavings = savedUnits * marginalRate;
-    const capitalCost = qty * 100; // ~₹100 per 9W LED bulb
+    const capitalCost = qty * 100;
 
-    recommendations.push({
-      id: 'REC_LED_UPGRADE',
-      category: 'Lighting Retrofit',
-      priority: 'HIGH',
-      title: `Upgrade ${qty} Legacy Light Fixtures to 9W High-Lumen LEDs`,
-      description: `Replace remaining ${Math.round(avgWatts)}W tube lights or CFLs with 9W/10W LED bulbs (100+ lumens/watt).`,
-      reason: `Solid-state LED lighting provides equal or superior illumination (800+ lumens) at an 80% reduction in thermal dissipation and wattage.`,
-      estimatedMonthlySavings: Number(monthlySavings.toFixed(2)),
-      estimatedPaybackMonths: Number((capitalCost / monthlySavings).toFixed(1)),
-      actionItems: [
-        `Purchase ${qty} units of 9W BEE 5-Star LED bulbs.`,
-        `Payback is typically achieved in less than ${Math.max(1, Math.round(capitalCost / monthlySavings))} months.`
-      ]
-    });
+    if (monthlySavings > 0) {
+      recommendations.push({
+        id: 'REC_LED_UPGRADE',
+        category: 'Lighting Retrofit',
+        priority: 'HIGH',
+        title: `Upgrade ${qty} Legacy Light Fixtures to 9W High-Lumen LEDs`,
+        description: `Replace remaining ${Math.round(avgWatts)}W tube lights or CFLs with 9W/10W LED bulbs (100+ lumens/watt).`,
+        reason: `Solid-state LED lighting provides equal or superior illumination (800+ lumens) at an 80% reduction in thermal dissipation and wattage.`,
+        estimatedMonthlySavings: Number(monthlySavings.toFixed(2)),
+        estimatedPaybackMonths: Number((capitalCost / monthlySavings).toFixed(1)),
+        actionItems: [
+          `Purchase ${qty} units of 9W BEE 5-Star LED bulbs.`,
+          `Payback is typically achieved in less than ${Math.max(1, Math.round(capitalCost / monthlySavings))} months.`
+        ]
+      });
+    }
   }
 
   // 4. Air Conditioning Thermostat Tuning & Service Check
-  const acs = appliances.filter(a => a.appliance_name.toLowerCase().includes('ac') || a.appliance_name.toLowerCase().includes('air conditioner') || a.wattage >= 1200);
+  const acs = appliances.filter(isAirConditioner);
   if (acs.length > 0) {
-    const totalAcHours = acs.reduce((s, a) => s + (a.daily_hours * a.quantity), 0);
-    // Setting AC from 20C to 24C saves ~24% (6% per deg C as per Bureau of Energy Efficiency India)
-    const estimatedAcUnits = acs.reduce((s, a) => s + ((a.wattage * a.quantity * a.daily_hours * 30) / 1000), 0);
-    const potentialSavingsUnits = estimatedAcUnits * 0.24;
-    const monthlySavings = potentialSavingsUnits * marginalRate;
+    // Setting AC from 20C to 24C saves ~24% (about 6% per deg C per BEE India)
+    const estimatedAcUnits = acs.reduce((s, a) => s + ((Number(a.wattage) * Number(a.quantity) * Number(a.daily_hours) * 30) / 1000), 0);
+    const monthlySavings = estimatedAcUnits * 0.24 * marginalRate;
 
     recommendations.push({
       id: 'REC_AC_OPTIMIZATION',
@@ -118,7 +127,10 @@ function generateAuditRecommendations(auditData) {
   }
 
   // 5. Refrigeration Maintenance
-  const fridges = appliances.filter(a => a.category === 'Refrigeration' || a.appliance_name.toLowerCase().includes('fridge') || a.appliance_name.toLowerCase().includes('refrigerator'));
+  const fridges = appliances.filter(a => {
+    const n = String(a.appliance_name || '').toLowerCase();
+    return a.category === 'Refrigeration' || n.includes('fridge') || n.includes('refrigerator');
+  });
   if (fridges.length > 0) {
     recommendations.push({
       id: 'REC_REFRIGERATION_EFFICIENCY',

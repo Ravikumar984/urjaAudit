@@ -13,10 +13,31 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Helper to retrieve active slabs (Updated for MySQL)
+// -------------------------------------------------------------
+// Helpers
+// -------------------------------------------------------------
 async function getActiveTariffSlabs() {
   const [rows] = await db.execute('SELECT * FROM tariff_slabs ORDER BY min_units ASC');
   return rows;
+}
+
+/** Returns an error string, or null if the appliance payload is valid. */
+function validateAppliance(body) {
+  const name = String(body.appliance_name || '').trim();
+  if (!name) return 'Appliance name is required';
+  if (name.length > 100) return 'Appliance name is too long (max 100 characters)';
+  if (!String(body.category || '').trim()) return 'Category is required';
+
+  const quantity = Number(body.quantity);
+  const wattage = Number(body.wattage);
+  const hours = Number(body.daily_hours);
+  const days = body.days_per_month === undefined ? 30 : Number(body.days_per_month);
+
+  if (!Number.isInteger(quantity) || quantity < 1 || quantity > 1000) return 'Quantity must be a whole number between 1 and 1000';
+  if (!Number.isFinite(wattage) || wattage <= 0 || wattage > 100000) return 'Wattage must be greater than 0';
+  if (!Number.isFinite(hours) || hours < 0 || hours > 24) return 'Daily hours must be between 0 and 24';
+  if (!Number.isFinite(days) || days < 1 || days > 31) return 'Days per month must be between 1 and 31';
+  return null;
 }
 
 // -------------------------------------------------------------
@@ -39,11 +60,11 @@ app.post('/api/session/init', async (req, res) => {
       { name: 'Refrigerator (Frost-Free)', category: 'Refrigeration', qty: 1, wattage: 150, hours: 8 }
     ];
 
-    for (const app of defaultAppliances) {
+    for (const item of defaultAppliances) {
       await db.execute(`
         INSERT INTO appliances (session_id, appliance_name, category, quantity, wattage, daily_hours, days_per_month)
         VALUES (?, ?, ?, ?, ?, ?, 30)
-      `, [sessionId, app.name, app.category, app.qty, app.wattage, app.hours]);
+      `, [sessionId, item.name, item.category, item.qty, item.wattage, item.hours]);
     }
 
     await db.execute(`
@@ -52,6 +73,31 @@ app.post('/api/session/init', async (req, res) => {
     `, [sessionId]);
 
     res.json({ success: true, sessionId });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update property name / sanctioned load for a session
+app.put('/api/session/:sessionId', async (req, res) => {
+  try {
+    const { property_name, sanctioned_load_kw } = req.body;
+    const name = String(property_name || '').trim();
+    const load = Number(sanctioned_load_kw);
+
+    if (!name) return res.status(400).json({ error: 'Property name is required' });
+    if (name.length > 100) return res.status(400).json({ error: 'Property name is too long' });
+    if (!Number.isFinite(load) || load <= 0 || load > 1000) {
+      return res.status(400).json({ error: 'Sanctioned load must be greater than 0' });
+    }
+
+    const [result] = await db.execute(
+      'UPDATE audit_sessions SET property_name = ?, sanctioned_load_kw = ? WHERE id = ?',
+      [name, load, req.params.sessionId]
+    );
+    if (result.affectedRows === 0) return res.status(404).json({ error: 'Session not found' });
+
+    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -74,6 +120,11 @@ app.post('/api/bill/:sessionId', async (req, res) => {
     const { billing_month, actual_units_kwh, actual_bill_amount } = req.body;
     const sessionId = req.params.sessionId;
 
+    const units = Number(actual_units_kwh);
+    const amount = Number(actual_bill_amount);
+    if (!Number.isFinite(units) || units < 0) return res.status(400).json({ error: 'Units billed must be a valid number' });
+    if (!Number.isFinite(amount) || amount < 0) return res.status(400).json({ error: 'Bill amount must be a valid number' });
+
     const [existing] = await db.execute('SELECT id FROM bill_records WHERE session_id = ?', [sessionId]);
 
     if (existing.length > 0) {
@@ -81,12 +132,12 @@ app.post('/api/bill/:sessionId', async (req, res) => {
         UPDATE bill_records 
         SET billing_month = ?, actual_units_kwh = ?, actual_bill_amount = ?
         WHERE session_id = ?
-      `, [billing_month || 'Current Month', Number(actual_units_kwh), Number(actual_bill_amount), sessionId]);
+      `, [billing_month || 'Current Month', units, amount, sessionId]);
     } else {
       await db.execute(`
         INSERT INTO bill_records (session_id, billing_month, actual_units_kwh, actual_bill_amount)
         VALUES (?, ?, ?, ?)
-      `, [sessionId, billing_month || 'Current Month', Number(actual_units_kwh), Number(actual_bill_amount)]);
+      `, [sessionId, billing_month || 'Current Month', units, amount]);
     }
 
     res.json({ success: true, message: 'Bill record updated' });
@@ -101,10 +152,7 @@ app.post('/api/bill/:sessionId', async (req, res) => {
 app.get('/api/appliances/:sessionId', async (req, res) => {
   try {
     const [appliances] = await db.execute('SELECT * FROM appliances WHERE session_id = ? ORDER BY id ASC', [req.params.sessionId]);
-    const enriched = appliances.map(app => {
-      const energy = calculateApplianceEnergy(app);
-      return { ...app, ...energy };
-    });
+    const enriched = appliances.map(item => ({ ...item, ...calculateApplianceEnergy(item) }));
     res.json(enriched);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -113,11 +161,14 @@ app.get('/api/appliances/:sessionId', async (req, res) => {
 
 app.post('/api/appliances/:sessionId', async (req, res) => {
   try {
+    const problem = validateAppliance(req.body);
+    if (problem) return res.status(400).json({ error: problem });
+
     const { appliance_name, category, quantity, wattage, daily_hours, days_per_month = 30 } = req.body;
     const [result] = await db.execute(`
       INSERT INTO appliances (session_id, appliance_name, category, quantity, wattage, daily_hours, days_per_month)
       VALUES (?, ?, ?, ?, ?, ?, ?)
-    `, [req.params.sessionId, appliance_name, category, Number(quantity), Number(wattage), Number(daily_hours), Number(days_per_month)]);
+    `, [req.params.sessionId, String(appliance_name).trim(), category, Number(quantity), Number(wattage), Number(daily_hours), Number(days_per_month)]);
 
     res.json({ success: true, id: result.insertId });
   } catch (err) {
@@ -127,13 +178,17 @@ app.post('/api/appliances/:sessionId', async (req, res) => {
 
 app.put('/api/appliances/:id', async (req, res) => {
   try {
+    const problem = validateAppliance(req.body);
+    if (problem) return res.status(400).json({ error: problem });
+
     const { appliance_name, category, quantity, wattage, daily_hours, days_per_month = 30 } = req.body;
-    await db.execute(`
+    const [result] = await db.execute(`
       UPDATE appliances 
       SET appliance_name = ?, category = ?, quantity = ?, wattage = ?, daily_hours = ?, days_per_month = ?
       WHERE id = ?
-    `, [appliance_name, category, Number(quantity), Number(wattage), Number(daily_hours), Number(days_per_month), req.params.id]);
+    `, [String(appliance_name).trim(), category, Number(quantity), Number(wattage), Number(daily_hours), Number(days_per_month), req.params.id]);
 
+    if (result.affectedRows === 0) return res.status(404).json({ error: 'Appliance not found' });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -162,32 +217,32 @@ app.get('/api/audit-summary/:sessionId', async (req, res) => {
     const [appliances] = await db.execute('SELECT * FROM appliances WHERE session_id = ?', [sessionId]);
     const [billRows] = await db.execute('SELECT * FROM bill_records WHERE session_id = ? ORDER BY id DESC LIMIT 1', [sessionId]);
     const billRecord = billRows[0];
-    
+
     const slabs = await getActiveTariffSlabs();
 
     let totalCalculatedDailyKwh = 0;
     let totalCalculatedMonthlyKwh = 0;
 
-    const enrichedAppliances = appliances.map(app => {
-      const calc = calculateApplianceEnergy(app);
+    const enrichedAppliances = appliances.map(item => {
+      const calc = calculateApplianceEnergy(item);
       totalCalculatedDailyKwh += (calc.totalDailyKwh || 0);
       totalCalculatedMonthlyKwh += (calc.monthlyKwh || 0);
-      return { ...app, ...calc };
+      return { ...item, ...calc };
     });
 
-    const applianceBreakdown = enrichedAppliances.map(app => ({
-      ...app,
-      percentageShare: totalCalculatedMonthlyKwh > 0 
-        ? Number(((app.monthlyKwh / totalCalculatedMonthlyKwh) * 100).toFixed(1))
+    const applianceBreakdown = enrichedAppliances.map(item => ({
+      ...item,
+      percentageShare: totalCalculatedMonthlyKwh > 0
+        ? Number(((item.monthlyKwh / totalCalculatedMonthlyKwh) * 100).toFixed(1))
         : 0
     })).sort((a, b) => (b.monthlyKwh || 0) - (a.monthlyKwh || 0));
 
     const categoryBreakdown = {};
-    applianceBreakdown.forEach(app => {
-      if (!categoryBreakdown[app.category]) {
-        categoryBreakdown[app.category] = { category: app.category, monthlyKwh: 0, percentage: 0 };
+    applianceBreakdown.forEach(item => {
+      if (!categoryBreakdown[item.category]) {
+        categoryBreakdown[item.category] = { category: item.category, monthlyKwh: 0, percentage: 0 };
       }
-      categoryBreakdown[app.category].monthlyKwh += (app.monthlyKwh || 0);
+      categoryBreakdown[item.category].monthlyKwh += (item.monthlyKwh || 0);
     });
 
     Object.keys(categoryBreakdown).forEach(cat => {
@@ -197,13 +252,12 @@ app.get('/api/audit-summary/:sessionId', async (req, res) => {
         : 0;
     });
 
-    // STRICTLY SANITIZED BILLING CALCULATIONS
     const calculatedBillTariff = calculateTariffCost(totalCalculatedMonthlyKwh, slabs, session.sanctioned_load_kw) || {};
-    
-    const actualUnits = (billRecord && billRecord.actual_units_kwh != null) 
-      ? Number(billRecord.actual_units_kwh) 
+
+    const actualUnits = (billRecord && billRecord.actual_units_kwh != null)
+      ? Number(billRecord.actual_units_kwh)
       : totalCalculatedMonthlyKwh;
-      
+
     const actualBillTariff = calculateTariffCost(actualUnits, slabs, session.sanctioned_load_kw) || {};
 
     const unaccountedUnits = Number(Math.max(0, actualUnits - totalCalculatedMonthlyKwh).toFixed(2));
@@ -216,16 +270,15 @@ app.get('/api/audit-summary/:sessionId', async (req, res) => {
       calculatedTotalUnits: totalCalculatedMonthlyKwh
     }) || [];
 
-    // Ensure no missing savings properties crash the frontend UI
     const recommendations = rawRecommendations.map(rec => ({
       ...rec,
       estimatedMonthlySavings: Number(rec.estimatedMonthlySavings || 0)
     }));
 
     const totalPotentialSavingsMonthly = recommendations.reduce((sum, r) => sum + r.estimatedMonthlySavings, 0);
-    
-    const finalActualBillAmount = (billRecord && billRecord.actual_bill_amount != null) 
-      ? Number(billRecord.actual_bill_amount) 
+
+    const finalActualBillAmount = (billRecord && billRecord.actual_bill_amount != null)
+      ? Number(billRecord.actual_bill_amount)
       : (actualBillTariff.totalEstimatedBill || 0);
 
     res.json({
@@ -270,15 +323,11 @@ app.get('/api/audit-summary/:sessionId', async (req, res) => {
 app.post('/api/simulator/calculate', (req, res) => {
   try {
     const { existingWattage, newWattage, quantity, dailyHours, capitalCost, tariffRate = 8.0 } = req.body;
-    const result = calculateRetrofitROI(
-      Number(existingWattage),
-      Number(newWattage),
-      Number(quantity),
-      Number(dailyHours),
-      Number(capitalCost),
-      Number(tariffRate)
-    );
-    res.json(result);
+    const values = [existingWattage, newWattage, quantity, dailyHours, capitalCost, tariffRate].map(Number);
+    if (values.some(v => !Number.isFinite(v) || v < 0)) {
+      return res.status(400).json({ error: 'All simulator inputs must be non-negative numbers' });
+    }
+    res.json(calculateRetrofitROI(...values));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -294,6 +343,18 @@ app.get('/api/tariffs', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// -------------------------------------------------------------
+// Fallbacks
+// -------------------------------------------------------------
+app.use('/api', (req, res) => {
+  res.status(404).json({ error: `Unknown API route: ${req.method} ${req.originalUrl}` });
+});
+
+app.use((err, req, res, next) => {
+  // Malformed JSON bodies etc.
+  res.status(err.status || 500).json({ error: err.message || 'Unexpected server error' });
 });
 
 app.listen(PORT, () => {
