@@ -10,21 +10,14 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="css/styles.css">
-  <script>
-    // Apply saved theme before first paint to avoid a flash
-    try {
-      var t = localStorage.getItem('urja_theme') ||
-        (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-      document.documentElement.setAttribute('data-theme', t);
-    } catch (e) {}
-  </script>
+  <link rel="stylesheet" href="css/features.css">
+  <script src="js/theme-init.js"></script>
 </head>
 <body class="is-loading">
 
   <div id="loading-bar" class="loading-bar" aria-hidden="true"></div>
   <a href="#main" class="skip-link">Skip to content</a>
 
-  <!-- Top Navigation Header -->
   <header class="app-header">
     <div class="header-container">
       <div class="brand-group">
@@ -35,7 +28,7 @@
         </div>
         <div>
           <h1 class="brand-title">Urja<span>Audit</span></h1>
-          <p class="brand-tagline">Electricity Savings & Energy Audit Assistant</p>
+          <p class="brand-tagline">Understand, verify and reduce your electricity bill</p>
         </div>
       </div>
 
@@ -57,13 +50,16 @@
           <span class="tab-icon" aria-hidden="true">📊</span><span>Dashboard</span>
         </button>
         <button class="nav-tab" role="tab" aria-selected="false" data-screen="screen-bill">
-          <span class="tab-icon" aria-hidden="true">📄</span><span>Bill & Tariff</span>
+          <span class="tab-icon" aria-hidden="true">📄</span><span>Bill & History</span>
         </button>
         <button class="nav-tab" role="tab" aria-selected="false" data-screen="screen-appliances">
           <span class="tab-icon" aria-hidden="true">🔌</span><span>Appliance Inventory</span>
         </button>
         <button class="nav-tab" role="tab" aria-selected="false" data-screen="screen-simulator">
           <span class="tab-icon" aria-hidden="true">🎛️</span><span>Savings Simulator</span>
+        </button>
+        <button class="nav-tab" role="tab" aria-selected="false" data-screen="screen-solar">
+          <span class="tab-icon" aria-hidden="true">☀️</span><span>Solar Planner</span>
         </button>
         <button class="nav-tab" role="tab" aria-selected="false" data-screen="screen-report">
           <span class="tab-icon" aria-hidden="true">📑</span><span>Audit Report</span>
@@ -89,7 +85,6 @@
         </div>
       </div>
 
-      <!-- Shown when the appliance list is empty -->
       <div id="onboarding" class="onboarding panel-card" hidden>
         <div class="onboarding-art" aria-hidden="true">⚡</div>
         <h2 class="onboarding-title">Let's find where your electricity goes</h2>
@@ -99,8 +94,8 @@
         </p>
         <div class="steps">
           <div class="step"><span class="step-num">1</span><strong>Add appliances</strong><small>Name, wattage and daily hours</small></div>
-          <div class="step"><span class="step-num">2</span><strong>Enter your bill</strong><small>Units and amount from your bill</small></div>
-          <div class="step"><span class="step-num">3</span><strong>Get your plan</strong><small>Savings, payback and CO₂ impact</small></div>
+          <div class="step"><span class="step-num">2</span><strong>Check your bill</strong><small>Is it right? See your history</small></div>
+          <div class="step"><span class="step-num">3</span><strong>Cut it down</strong><small>Savings plan and solar payback</small></div>
         </div>
         <div class="onboarding-actions">
           <button class="btn btn-primary" data-goto="screen-appliances">🔌 Add my appliances</button>
@@ -110,7 +105,6 @@
 
       <div id="dash-content" class="dash-content">
 
-        <!-- Hero: efficiency score -->
         <div class="hero" id="hero" data-tone="good">
           <span class="hero-blob hero-blob-1" aria-hidden="true"></span>
           <span class="hero-blob hero-blob-2" aria-hidden="true"></span>
@@ -124,7 +118,9 @@
           </div>
         </div>
 
-        <!-- KPI Summary Cards -->
+        <!-- Bill check verdict (filled by features.js) -->
+        <button type="button" id="dash-verdict" class="verdict-strip" data-goto="screen-bill" hidden></button>
+
         <div class="kpi-grid">
           <div class="kpi-card">
             <div class="kpi-header">
@@ -138,7 +134,7 @@
           <div class="kpi-card">
             <div class="kpi-header">
               <span class="kpi-label">Actual Metered Energy</span>
-              <span class="kpi-badge badge-info">Utility Bill</span>
+              <span class="kpi-badge badge-info">Latest Bill</span>
             </div>
             <div class="kpi-value"><span id="kpi-bill-kwh" data-value="0">0.0</span> <span class="unit">kWh</span></div>
             <div class="kpi-footer">Actual bill: <strong id="kpi-bill-cost">₹0.00</strong></div>
@@ -163,7 +159,6 @@
           </div>
         </div>
 
-        <!-- Reconciliation + Carbon -->
         <div class="dashboard-grid">
           <div class="panel-card">
             <div class="panel-header">
@@ -199,7 +194,6 @@
           </div>
         </div>
 
-        <!-- Breakdown Visuals -->
         <div class="dashboard-grid">
           <div class="panel-card chart-panel">
             <div class="panel-header">
@@ -221,7 +215,6 @@
           </div>
         </div>
 
-        <!-- Slab ladder -->
         <div class="panel-card">
           <div class="panel-header">
             <h3 class="panel-title">Tariff Slab Ladder</h3>
@@ -231,7 +224,6 @@
           <p class="recon-text" id="slab-message"></p>
         </div>
 
-        <!-- Projection + What-if -->
         <div class="dashboard-grid">
           <div class="panel-card">
             <div class="panel-header">
@@ -270,20 +262,20 @@
     </section>
 
     <!-- ========================================== -->
-    <!-- SCREEN 2: BILL & TARIFF MANAGER            -->
+    <!-- SCREEN 2: BILL, BILL CHECK & HISTORY       -->
     <!-- ========================================== -->
     <section id="screen-bill" class="screen-panel" role="tabpanel">
       <div class="screen-header">
         <div>
-          <h2 class="screen-title">Electricity Bill & Discom Tariff Slabs</h2>
-          <p class="screen-subtitle">Enter your monthly bill and see how the tariff slabs apply.</p>
+          <h2 class="screen-title">Bill Check, Tariff Slabs & History</h2>
+          <p class="screen-subtitle">Check whether your bill is right, and track your usage month by month.</p>
         </div>
       </div>
 
       <div class="form-layout-grid">
-        <div class="panel-card">
+        <div class="panel-card" id="bill-form-card">
           <div class="panel-header">
-            <h3 class="panel-title">Monthly Utility Bill Parameters</h3>
+            <h3 class="panel-title">Enter a Monthly Bill</h3>
           </div>
           <form id="form-bill" class="standard-form" novalidate>
             <div class="form-group">
@@ -292,8 +284,9 @@
             </div>
 
             <div class="form-group">
-              <label for="bill-month">Billing Period / Month</label>
-              <input type="text" id="bill-month" class="form-input" value="Current Month" required>
+              <label for="bill-month">Billing Month</label>
+              <input type="text" id="bill-month" class="form-input" maxlength="20" value="Current Month" placeholder="e.g. Dec 2026" required>
+              <small class="form-hint">Use a different month name to add another month to your history. Reusing a name updates that month.</small>
             </div>
 
             <div class="form-row">
@@ -324,7 +317,7 @@
 
             <div class="bill-preview" id="bill-preview" aria-live="polite"></div>
 
-            <button type="submit" class="btn btn-primary w-full mt-4">💾 Save & Recalculate</button>
+            <button type="submit" class="btn btn-primary w-full mt-4">💾 Save & Check Bill</button>
           </form>
         </div>
 
@@ -342,6 +335,34 @@
             </table>
           </div>
           <div class="tariff-breakdown-summary" id="tariff-summary-box"></div>
+          <p class="form-hint mt-4">Slab rates come from the database. Confirm them against the latest tariff order from your electricity regulator (BERC for Bihar) and update the <code>tariff_slabs</code> table when tariffs change.</p>
+        </div>
+      </div>
+
+      <!-- Bill check verdict -->
+      <div class="panel-card mt-6" id="bill-check-card">
+        <div class="panel-header">
+          <h3 class="panel-title">Bill Check</h3>
+          <span class="panel-tag">Is my bill right?</span>
+        </div>
+        <div id="bill-check-body"></div>
+      </div>
+
+      <!-- Bill history -->
+      <div class="panel-card mt-6" id="history-card">
+        <div class="panel-header">
+          <h3 class="panel-title">Bill History & Trends</h3>
+          <button type="button" class="btn btn-outline btn-sm" id="btn-add-month">＋ Add another month</button>
+        </div>
+        <ul class="insight-list" id="history-insights"></ul>
+        <div id="history-chart" class="line-chart-container" role="img" aria-label="Bar chart of units billed per month"></div>
+        <div class="table-responsive">
+          <table class="data-table">
+            <thead>
+              <tr><th>Month</th><th>Units</th><th>Amount</th><th>₹ / unit</th><th>vs slab estimate</th><th>Notes</th><th></th></tr>
+            </thead>
+            <tbody id="history-tbody"></tbody>
+          </table>
         </div>
       </div>
     </section>
@@ -547,13 +568,101 @@
     </section>
 
     <!-- ========================================== -->
-    <!-- SCREEN 5: AUDIT REPORT & EXPORT            -->
+    <!-- SCREEN 5: ROOFTOP SOLAR PLANNER            -->
+    <!-- ========================================== -->
+    <section id="screen-solar" class="screen-panel" role="tabpanel">
+      <div class="screen-header">
+        <div>
+          <h2 class="screen-title">Rooftop Solar Planner</h2>
+          <p class="screen-subtitle">Estimate system size, cost, subsidy and payback using your actual tariff slabs.</p>
+        </div>
+      </div>
+
+      <div class="form-layout-grid">
+        <div class="panel-card">
+          <div class="panel-header">
+            <h3 class="panel-title">Your Setup</h3>
+            <span class="panel-tag">Editable assumptions</span>
+          </div>
+          <form id="form-solar" class="standard-form" novalidate>
+            <div class="form-group">
+              <label for="solar-units">Monthly electricity use (kWh)</label>
+              <input type="number" min="1" max="5000" step="1" id="solar-units" class="form-input" required>
+              <small class="form-hint" id="solar-units-hint"></small>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label for="solar-sun">Peak sun hours / day</label>
+                <input type="number" min="2" max="7" step="0.1" id="solar-sun" class="form-input" value="4.5">
+                <small class="form-hint">About 4.5 to 5 is typical for the north Indian plains. Adjust if you have local data.</small>
+              </div>
+              <div class="form-group">
+                <label for="solar-cost">Installed cost per kW (₹)</label>
+                <input type="number" min="20000" max="150000" step="1000" id="solar-cost" class="form-input" value="60000">
+                <small class="form-hint">A placeholder. Get 2 to 3 vendor quotes.</small>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label for="solar-offset">Share of your usage to cover: <strong><span id="solar-offset-val">100</span>%</strong></label>
+              <input type="range" min="10" max="100" step="5" value="100" id="solar-offset" class="form-range">
+              <div class="range-labels"><span>10%</span><span>100%</span></div>
+            </div>
+
+            <label class="checkbox-row" for="solar-subsidy">
+              <input type="checkbox" id="solar-subsidy" checked>
+              <span>
+                Include estimated PM Surya Ghar subsidy
+                <small class="form-hint">Estimated at ₹30,000 per kW for the first 2 kW and ₹18,000 for the 3rd kW (max ₹78,000). Scheme rules change, so confirm on pmsuryaghar.gov.in.</small>
+              </span>
+            </label>
+
+            <div class="form-actions">
+              <button type="submit" class="btn btn-primary">☀️ Calculate</button>
+              <button type="button" class="btn btn-outline" id="btn-solar-reset">↺ Reset</button>
+            </div>
+          </form>
+          <p class="calc-note">Assumes 80% real-world panel efficiency, 0.7% yearly output loss over 25 years, no tariff increases, and no payment for surplus units. These choices keep the estimate on the cautious side.</p>
+        </div>
+
+        <div class="panel-card">
+          <div class="panel-header">
+            <h3 class="panel-title">Your Solar Estimate</h3>
+            <span class="panel-tag">Planning only</span>
+          </div>
+
+          <div id="solar-empty" class="empty-state"><span class="big">☀️</span>Enter your monthly units to see a solar estimate.</div>
+
+          <div id="solar-results" hidden>
+            <div class="stat-grid">
+              <div class="stat-box accent"><span class="label">Recommended size</span><strong id="solar-size">—</strong><small id="solar-roof"></small></div>
+              <div class="stat-box"><span class="label">Generation / month</span><strong id="solar-gen">—</strong><small id="solar-cover"></small></div>
+              <div class="stat-box"><span class="label">Upfront cost</span><strong id="solar-gross">—</strong></div>
+              <div class="stat-box"><span class="label">Subsidy (estimate)</span><strong id="solar-subsidy-amt">—</strong></div>
+              <div class="stat-box accent"><span class="label">You pay</span><strong id="solar-net">—</strong></div>
+              <div class="stat-box accent"><span class="label">Bill savings / month</span><strong id="solar-savings">—</strong><small id="solar-bill-change"></small></div>
+              <div class="stat-box"><span class="label">Payback</span><strong id="solar-payback">—</strong></div>
+              <div class="stat-box"><span class="label">25-year net gain</span><strong id="solar-gain">—</strong></div>
+              <div class="stat-box"><span class="label">CO₂ avoided / year</span><strong id="solar-co2">—</strong><small id="solar-trees"></small></div>
+            </div>
+
+            <h4 class="solar-chart-title">Cumulative cash position over 25 years</h4>
+            <div id="solar-chart" class="line-chart-container" role="img" aria-label="Line chart of cumulative solar savings over 25 years"></div>
+            <p class="recon-text" id="solar-note"></p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========================================== -->
+    <!-- SCREEN 6: AUDIT REPORT & EXPORT            -->
     <!-- ========================================== -->
     <section id="screen-report" class="screen-panel" role="tabpanel">
       <div class="screen-header no-print">
         <div>
           <h2 class="screen-title">Personalized Energy Audit Report</h2>
-          <p class="screen-subtitle">Printable audit report with reconciliation and action checklist.</p>
+          <p class="screen-subtitle">Printable audit report with bill check, history and action checklist.</p>
         </div>
         <div class="header-actions">
           <button class="btn btn-outline" id="btn-export-report">⬇ Export CSV</button>
@@ -603,7 +712,20 @@
         </div>
 
         <div class="report-section">
-          <h3 class="report-sec-heading">2. Detailed Appliance Inventory & Load Breakdown</h3>
+          <h3 class="report-sec-heading">2. Bill Verification & History</h3>
+          <div id="report-bill-check"></div>
+          <div class="table-responsive">
+            <table class="report-table">
+              <thead>
+                <tr><th>Month</th><th>Units (kWh)</th><th>Amount</th><th>vs slab estimate</th><th>Notes</th></tr>
+              </thead>
+              <tbody id="report-history-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="report-section">
+          <h3 class="report-sec-heading">3. Detailed Appliance Inventory & Load Breakdown</h3>
           <div class="table-responsive">
             <table class="report-table">
               <thead>
@@ -615,12 +737,17 @@
         </div>
 
         <div class="report-section">
-          <h3 class="report-sec-heading">3. Priority Action Plan & Retrofit Roadmap</h3>
+          <h3 class="report-sec-heading">4. Priority Action Plan & Retrofit Roadmap</h3>
           <div id="report-recommendations-list" class="report-rec-list"></div>
         </div>
 
+        <div class="report-section" id="report-solar-section" hidden>
+          <h3 class="report-sec-heading">5. Rooftop Solar Estimate</h3>
+          <div id="report-solar"></div>
+        </div>
+
         <div class="report-footer-meta">
-          <p>Generated by <strong>UrjaAudit Assistant</strong>. Calculations follow Discom tariff structures and BEE guidelines.</p>
+          <p>Generated by <strong>UrjaAudit Assistant</strong>. Calculations use the tariff slabs stored in the system and BEE guidelines. Estimates are indicative.</p>
           <p><em>Formula: Daily Energy (kWh) = (Power in Watts × Quantity × Daily Hours) / 1000</em></p>
         </div>
       </div>
@@ -632,7 +759,6 @@
     UrjaAudit · Estimates are indicative; your actual bill may include other surcharges.
   </footer>
 
-  <!-- Edit appliance dialog -->
   <dialog id="dialog-edit" class="modal" aria-labelledby="edit-title">
     <form id="form-edit-appliance" class="standard-form" novalidate>
       <h3 id="edit-title" class="modal-title">Edit Appliance</h3>
@@ -671,7 +797,6 @@
     </form>
   </dialog>
 
-  <!-- Confirm dialog -->
   <dialog id="dialog-confirm" class="modal modal-sm" aria-labelledby="confirm-title">
     <form method="dialog" class="standard-form">
       <h3 id="confirm-title" class="modal-title">Are you sure?</h3>
@@ -687,5 +812,6 @@
 
   <script src="js/charts.js"></script>
   <script src="js/app.js"></script>
+  <script src="js/features.js"></script>
 </body>
 </html>

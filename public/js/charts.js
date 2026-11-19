@@ -1,6 +1,6 @@
 /**
  * UrjaAudit Lightweight Native SVG Visualization Engine
- * Donut chart, score gauge and line chart. No external libraries.
+ * Donut chart, score gauge, line chart and bar chart. No external libraries.
  */
 
 const CHART_COLORS = ['#059669', '#3b82f6', '#f59e0b', '#8b5cf6', '#ec4899', '#64748b'];
@@ -15,9 +15,7 @@ function svgEl(name, attrs = {}, text) {
   return el;
 }
 
-/**
- * Donut chart. Hovering a slice shows its value in the centre.
- */
+/** Donut chart. Hovering a slice shows its value in the centre. */
 function renderDonutChart(containerId, data, opts = {}) {
   const container = document.getElementById(containerId);
   if (!container) return;
@@ -87,9 +85,7 @@ function renderDonutChart(containerId, data, opts = {}) {
   container.appendChild(svg);
 }
 
-/**
- * Animated circular gauge (0-100). Pass null for "no score".
- */
+/** Animated circular gauge (0-100). Pass null for "no score". */
 function renderGauge(containerId, score) {
   const container = document.getElementById(containerId);
   if (!container) return;
@@ -147,9 +143,7 @@ function niceStep(raw) {
 
 /**
  * Line + area chart with a zero baseline and optional break-even marker.
- * @param {string} containerId
- * @param {{x:number,y:number}[]} points
- * @param {{yFormat?:Function, xTickEvery?:number, breakEven?:number|null}} [opts]
+ * opts: { yFormat, xTickEvery, xLabel, breakEven, breakEvenUnit }
  */
 function renderLineChart(containerId, points, opts = {}) {
   const container = document.getElementById(containerId);
@@ -180,7 +174,6 @@ function renderLineChart(containerId, points, opts = {}) {
 
   const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'xMidYMid meet' });
 
-  // Gradient for the area
   const gradId = `lc-grad-${containerId}`;
   const defs = svgEl('defs');
   const grad = svgEl('linearGradient', { id: gradId, x1: 0, y1: 0, x2: 0, y2: 1 });
@@ -193,7 +186,6 @@ function renderLineChart(containerId, points, opts = {}) {
   defs.appendChild(grad);
   svg.appendChild(defs);
 
-  // Y grid + labels
   const step = niceStep((yMax - yMin) / 4);
   for (let v = Math.ceil(yMin / step) * step; v <= yMax; v += step) {
     const y = sy(v);
@@ -201,43 +193,39 @@ function renderLineChart(containerId, points, opts = {}) {
     svg.appendChild(svgEl('text', { x: pl - 6, y: y + 3, 'text-anchor': 'end', class: 'lc-axis' }, yFormat(v)));
   }
 
-  // X labels
   points.forEach((p) => {
     if (p.x % tickEvery !== 0) return;
     svg.appendChild(svgEl('text', { x: sx(p.x), y: H - 10, 'text-anchor': 'middle', class: 'lc-axis' }, p.x));
   });
-  svg.appendChild(svgEl('text', { x: (pl + W - pr) / 2, y: H - 0.5, 'text-anchor': 'middle', class: 'lc-axis' }, 'Months'));
+  svg.appendChild(svgEl('text', { x: (pl + W - pr) / 2, y: H - 0.5, 'text-anchor': 'middle', class: 'lc-axis' }, opts.xLabel || 'Months'));
 
-  // Area between curve and zero line
   const zeroY = sy(0);
   const linePath = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${sx(p.x)} ${sy(p.y)}`).join(' ');
   const areaPath = `${linePath} L ${sx(xMax)} ${zeroY} L ${sx(xMin)} ${zeroY} Z`;
   svg.appendChild(svgEl('path', { d: areaPath, fill: `url(#${gradId})` }));
 
-  // Break-even marker
   if (opts.breakEven != null && opts.breakEven >= xMin && opts.breakEven <= xMax) {
     const bx = sx(opts.breakEven);
     svg.appendChild(svgEl('line', { x1: bx, x2: bx, y1: pt, y2: H - pb, class: 'lc-be-line' }));
-    const anchor = bx > W - 80 ? 'end' : 'start';
+    const anchor = bx > W - 90 ? 'end' : 'start';
     svg.appendChild(svgEl('text', { x: anchor === 'end' ? bx - 4 : bx + 4, y: pt + 8, 'text-anchor': anchor, class: 'lc-be-label' },
-      `Break-even ≈ ${opts.breakEven.toFixed(1)} mo`));
+      `Break-even ≈ ${opts.breakEven.toFixed(1)} ${opts.breakEvenUnit || 'mo'}`));
   }
 
-  // Line
   const line = svgEl('path', { d: linePath, class: 'lc-line' });
   svg.appendChild(line);
 
-  // Points (hit area first so the dot can react to hover)
+  // Dots are skipped on long series to keep the chart clean
+  const showDots = points.length <= 16;
   points.forEach((p) => {
-    const hit = svgEl('circle', { cx: sx(p.x), cy: sy(p.y), r: 10, class: 'lc-hit' });
-    hit.appendChild(svgEl('title', {}, `Month ${p.x}: ${yFormat(p.y)}`));
+    const hit = svgEl('circle', { cx: sx(p.x), cy: sy(p.y), r: showDots ? 10 : 6, class: 'lc-hit' });
+    hit.appendChild(svgEl('title', {}, `${opts.xLabel === 'Years' ? 'Year' : 'Month'} ${p.x}: ${yFormat(p.y)}`));
     svg.appendChild(hit);
-    svg.appendChild(svgEl('circle', { cx: sx(p.x), cy: sy(p.y), r: 3, class: 'lc-dot' }));
+    if (showDots) svg.appendChild(svgEl('circle', { cx: sx(p.x), cy: sy(p.y), r: 3, class: 'lc-dot' }));
   });
 
   container.appendChild(svg);
 
-  // Draw-in animation
   if (!prefersReducedMotion() && typeof line.getTotalLength === 'function') {
     try {
       const len = line.getTotalLength();
@@ -248,4 +236,65 @@ function renderLineChart(containerId, points, opts = {}) {
       requestAnimationFrame(() => { line.style.strokeDashoffset = 0; });
     } catch { /* ignore if the element is hidden */ }
   }
+}
+
+/**
+ * Bar chart. bars: [{ label, value, flagged }]. opts: { yFormat, average, unitLabel }
+ * Flagged bars are drawn in amber.
+ */
+function renderBarChart(containerId, bars, opts = {}) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  container.innerHTML = '';
+
+  if (!bars || !bars.length) {
+    container.innerHTML = '<div class="empty-state"><span class="big">📊</span>No bills saved yet</div>';
+    return;
+  }
+
+  const yFormat = opts.yFormat || ((v) => String(Math.round(v)));
+  const W = 420, H = 210, pl = 44, pr = 12, pt = 22, pb = 34;
+
+  const maxVal = Math.max(...bars.map((b) => b.value), opts.average || 0, 1);
+  const yMax = maxVal * 1.15;
+  const sy = (v) => pt + (1 - v / yMax) * (H - pt - pb);
+
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'xMidYMid meet' });
+
+  const step = niceStep(yMax / 4);
+  for (let v = 0; v <= yMax; v += step) {
+    const y = sy(v);
+    svg.appendChild(svgEl('line', { x1: pl, x2: W - pr, y1: y, y2: y, class: v === 0 ? 'lc-zero' : 'lc-grid' }));
+    svg.appendChild(svgEl('text', { x: pl - 6, y: y + 3, 'text-anchor': 'end', class: 'lc-axis' }, yFormat(v)));
+  }
+
+  const slot = (W - pl - pr) / bars.length;
+  const bw = Math.min(34, slot * 0.62);
+  const labelEvery = bars.length > 8 ? 2 : 1;
+
+  bars.forEach((b, i) => {
+    const x = pl + slot * i + (slot - bw) / 2;
+    const y = sy(b.value);
+    const h = Math.max(0, sy(0) - y);
+
+    const rect = svgEl('rect', { x, y, width: bw, height: h, rx: 3, class: `bc-bar${b.flagged ? ' flagged' : ''}` });
+    rect.style.animationDelay = `${i * 50}ms`;
+    rect.appendChild(svgEl('title', {}, `${b.label}: ${yFormat(b.value)}${opts.unitLabel ? ' ' + opts.unitLabel : ''}${b.flagged ? ' (unusual)' : ''}`));
+    svg.appendChild(rect);
+
+    if (bars.length <= 8) {
+      svg.appendChild(svgEl('text', { x: x + bw / 2, y: y - 4, 'text-anchor': 'middle', class: 'bc-val' }, yFormat(b.value)));
+    }
+    if (i % labelEvery === 0) {
+      svg.appendChild(svgEl('text', { x: x + bw / 2, y: H - 14, 'text-anchor': 'middle', class: 'lc-axis' }, b.label));
+    }
+  });
+
+  if (opts.average > 0) {
+    const ay = sy(opts.average);
+    svg.appendChild(svgEl('line', { x1: pl, x2: W - pr, y1: ay, y2: ay, class: 'bc-avg' }));
+    svg.appendChild(svgEl('text', { x: W - pr, y: ay - 4, 'text-anchor': 'end', class: 'bc-avg-label' }, `Avg ${yFormat(opts.average)}`));
+  }
+
+  container.appendChild(svg);
 }

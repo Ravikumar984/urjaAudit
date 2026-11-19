@@ -4,6 +4,9 @@
  * Every page load starts a brand-new, empty audit session.
  * The session id is kept in memory only, so each visitor and each refresh
  * starts with an empty appliance list.
+ *
+ * Bill check, bill history and the solar planner live in features.js
+ * (loaded after this file, uses the helpers defined here).
  */
 
 // -------------------------------------------------------------
@@ -19,7 +22,9 @@ const state = {
   bill: null,
   tariffs: [],
   filters: { q: '', category: '', sort: 'default' },
-  roiTariffSeeded: false
+  roiTariffSeeded: false,
+  solar: null,
+  solarUnitsTouched: false
 };
 
 const REDUCED_MOTION = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -198,6 +203,7 @@ function switchScreen(screenId, updateHash = true) {
     populateSimulatorApplianceDropdown();
     runROI();
   }
+  if (screenId === 'screen-solar') initSolar();
   window.scrollTo({ top: 0, behavior: REDUCED_MOTION ? 'auto' : 'smooth' });
 }
 
@@ -239,6 +245,8 @@ async function createNewSession(announce = true, withSample = false) {
   });
   state.sessionId = data.sessionId; // memory only, gone on refresh
   state.roiTariffSeeded = false;
+  state.solar = null;
+  state.solarUnitsTouched = false;
   await refreshAllData();
   if (announce) toast(withSample ? 'Sample household loaded' : 'Started a new empty audit');
 }
@@ -270,8 +278,10 @@ function renderAll() {
   renderBillForm();
   renderTariffBreakdown();
   renderAppliancesTable();
+  renderFeatures();            // bill check + history (features.js)
   renderReport();
   if (state.activeScreen === 'screen-simulator') populateSimulatorApplianceDropdown();
+  if (state.activeScreen === 'screen-solar') initSolar();
   if (!state.roiTariffSeeded && state.summary?.metrics?.marginalRate) {
     $('roi-tariff').value = state.summary.metrics.marginalRate;
     state.roiTariffSeeded = true;
@@ -291,7 +301,6 @@ function computeScore(m, recs, hasBill) {
   const rate = m.marginalRate || 8;
   const calcCost = m.totalCalculatedMonthlyKwh * rate;
 
-  // Savings from real upgrades/behaviour (excluding the unexplained-drain item, scored separately)
   const upgradeSavings = recs
     .filter((r) => r.id !== 'REC_PHANTOM_DRAIN')
     .reduce((s, r) => s + r.estimatedMonthlySavings, 0);
@@ -364,7 +373,6 @@ function renderDashboard() {
   renderReconciliation(m, hasBill);
   renderCarbon(m);
 
-  // Top appliances
   const topList = $('top-appliances-list');
   topList.innerHTML = '';
   (state.summary.applianceBreakdown || []).slice(0, 5).forEach((a, i) => {
@@ -381,7 +389,6 @@ function renderDashboard() {
     topList.appendChild(item);
   });
 
-  // Donut + legend
   const categoryData = (state.summary.categoryBreakdown || []).map((c) => ({ label: c.category, value: c.monthlyKwh }));
   renderDonutChart('category-chart-container', categoryData, {
     centerValue: num(m.totalCalculatedMonthlyKwh, 0),
@@ -429,7 +436,7 @@ function renderReconciliation(m, hasBill) {
   if (!hasBill || m.actualUnitsKwh <= 0) {
     $('recon-accounted').style.width = '0%';
     $('recon-drain').style.width = '0%';
-    $('recon-text').textContent = 'Enter your billed units on the Bill & Tariff tab to see how well your appliance list matches your meter.';
+    $('recon-text').textContent = 'Enter your billed units on the Bill & History tab to see how well your appliance list matches your meter.';
     return;
   }
 
@@ -485,7 +492,7 @@ function renderSlabLadder(m, hasBill) {
   const units = useBill ? m.actualUnitsKwh : m.totalCalculatedMonthlyKwh;
 
   const segStart = (s) => (Number(s.min_units) === 0 ? 0 : Number(s.min_units) - 1);
-  const OPEN_EXTRA = 100; // visual width given to the open-ended top slab
+  const OPEN_EXTRA = 100;
   const last = slabs[slabs.length - 1];
   const segEnd = (s) => (s.max_units !== null ? Number(s.max_units) : segStart(s) + OPEN_EXTRA);
   const total = segEnd(last);
@@ -533,7 +540,6 @@ function renderProjection(recs) {
     return;
   }
 
-  // Approximate upfront cost, back-calculated from each recommendation's payback
   const capital = Math.round(recs.reduce((s, r) => (
     s + (r.estimatedPaybackMonths ? r.estimatedPaybackMonths * r.estimatedMonthlySavings : 0)
   ), 0));
@@ -605,7 +611,7 @@ function renderRecommendationsList(containerId, recs, applianceCount = 1) {
 }
 
 // -------------------------------------------------------------
-// Screen 2: Bill & Tariff
+// Screen 2: Bill form & tariff breakdown (bill check/history: features.js)
 // -------------------------------------------------------------
 function renderBillForm() {
   const session = state.summary?.session;
@@ -882,7 +888,7 @@ async function runROI() {
 }
 
 // -------------------------------------------------------------
-// Screen 5: Report
+// Screen 6: Report
 // -------------------------------------------------------------
 function renderReport() {
   if (!state.summary) return;
@@ -939,12 +945,15 @@ function renderReport() {
       <ul class="report-rec-actions">${(r.actionItems || []).map((x) => `<li>${esc(x)}</li>`).join('')}</ul>`;
     recContainer.appendChild(div);
   });
+
+  renderReportExtras(); // bill check, history and solar sections (features.js)
 }
 
 function exportReportCSV() {
   if (!state.summary) return;
   const m = state.summary.metrics;
   const hasBill = !!state.bill;
+  const check = state.summary.billCheck;
   const rows = [
     ['UrjaAudit Summary'],
     ['Property', state.summary.session.property_name],
@@ -954,6 +963,11 @@ function exportReportCSV() {
     ['Estimated bill from inventory (INR)', m.estimatedCalculatedBill],
     ['Unexplained drain (kWh)', m.unaccountedUnits],
     ['Potential monthly savings (INR)', m.totalPotentialSavingsMonthly],
+    ['Bill check', check ? check.headline : 'no bill'],
+    [],
+    ['Bill history'],
+    ['Month', 'Units (kWh)', 'Amount (INR)', 'Slab estimate (INR)'],
+    ...((state.summary.billHistory?.points || []).map((p) => [p.label, p.units, p.amount, p.expectedAmount])),
     [],
     ['Recommendation', 'Priority', 'Est. monthly savings (INR)'],
     ...(state.summary.recommendations || []).map((r) => [r.title, r.priority, r.estimatedMonthlySavings])
@@ -1018,8 +1032,10 @@ function setupEventListeners() {
     const amount = Number($('actual-amount').value);
     const load = Number($('sanctioned-load').value);
     const name = $('bill-property').value.trim();
+    const month = $('bill-month').value.trim();
 
     if (!name) return toast('Please enter a property name', 'error');
+    if (!month) return toast('Enter a billing month, for example "Dec 2026"', 'error');
     if (!(units >= 0) || $('actual-units').value === '') return toast('Enter a valid number of units', 'error');
     if (!(amount >= 0) || $('actual-amount').value === '') return toast('Enter a valid bill amount', 'error');
     if (!(load > 0)) return toast('Sanctioned load must be greater than 0', 'error');
@@ -1029,17 +1045,14 @@ function setupEventListeners() {
         method: 'PUT',
         body: JSON.stringify({ property_name: name, sanctioned_load_kw: load })
       });
-      await api(`/api/bill/${state.sessionId}`, {
+      const result = await api(`/api/bill/${state.sessionId}`, {
         method: 'POST',
-        body: JSON.stringify({
-          billing_month: $('bill-month').value.trim() || 'Current Month',
-          actual_units_kwh: units,
-          actual_bill_amount: amount
-        })
+        body: JSON.stringify({ billing_month: month, actual_units_kwh: units, actual_bill_amount: amount })
       });
       await refreshAllData();
-      toast('Bill saved and audit recalculated');
-      switchScreen('screen-dashboard');
+      toast(result.updated ? `${month} bill updated` : `${month} bill added to your history`);
+      // Stay on this tab so the person sees the verdict
+      $('bill-check-card').scrollIntoView({ behavior: REDUCED_MOTION ? 'auto' : 'smooth', block: 'start' });
     } catch (err) {
       toast(err.message, 'error');
     }
@@ -1111,7 +1124,7 @@ function setupEventListeners() {
       const ok = await confirmDialog(`Remove "${a ? a.appliance_name : 'this appliance'}" from your inventory?`, 'Delete');
       if (!ok) return;
       try {
-        await api(`/api/appliances/${id}`, { method: 'DELETE' });
+        await api(`/api/appliances/${state.sessionId}/${id}`, { method: 'DELETE' });
         await refreshAllData();
         toast('Appliance removed');
       } catch (err) {
@@ -1135,7 +1148,7 @@ function setupEventListeners() {
       days_per_month: original ? original.days_per_month : 30
     };
     try {
-      await api(`/api/appliances/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
+      await api(`/api/appliances/${state.sessionId}/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
       $('dialog-edit').close();
       await refreshAllData();
       toast('Appliance updated');
@@ -1165,6 +1178,9 @@ function setupEventListeners() {
   // Report
   $('btn-print').addEventListener('click', () => window.print());
   $('btn-export-report').addEventListener('click', exportReportCSV);
+
+  // Bill check, history and solar planner (features.js)
+  setupFeatureListeners();
 }
 
 document.addEventListener('DOMContentLoaded', initApp);
